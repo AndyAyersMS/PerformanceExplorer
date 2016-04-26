@@ -55,6 +55,7 @@ namespace PerformanceExplorer
     {
         public CoreClrRunner()
         {
+            cmdExe = @"c:\windows\system32\cmd.exe";
             runnerExe = @"c:\repos\coreclr\bin\tests\windows_nt.x64.Release\tests\core_root\corerun.exe";
             verbose = true;
         }
@@ -63,7 +64,8 @@ namespace PerformanceExplorer
         {
             // Setup process information
             System.Diagnostics.Process runnerProcess = new Process();
-            runnerProcess.StartInfo.FileName = runnerExe;
+            runnerProcess.StartInfo.FileName = cmdExe;
+            string stderrName = c.ResultsDirectory + @"\" + b.ShortName + "-" + c.Name + ".err";
 
             foreach (string envVar in c.Environment.Keys)
             {
@@ -71,25 +73,17 @@ namespace PerformanceExplorer
             }
             runnerProcess.StartInfo.Environment["CORE_ROOT"] = Path.GetDirectoryName(runnerExe);
 
-            runnerProcess.StartInfo.Arguments = b.FullPath;
+            runnerProcess.StartInfo.Arguments = "/C \"" + runnerExe + " " + b.FullPath + "> " + stderrName + "\"";
             runnerProcess.StartInfo.WorkingDirectory = System.IO.Path.GetDirectoryName(b.FullPath);
             runnerProcess.StartInfo.UseShellExecute = false;
-            // runnerProcess.StartInfo.RedirectStandardError = true;
-            runnerProcess.StartInfo.RedirectStandardOutput = true;
-            StringBuilder sb = new StringBuilder();
 
-            runnerProcess.OutputDataReceived += (s, e) =>
+            if (verbose)
             {
-                sb.AppendLine(e.Data);
-            };
+                Console.WriteLine("CoreCLR: launching " + runnerProcess.StartInfo.Arguments);
+            }
 
             runnerProcess.Start();
-            runnerProcess.BeginOutputReadLine();
             runnerProcess.WaitForExit();
-
-            string stderrName = c.ResultsDirectory + @"\" + b.ShortName + "-" + c.Name + ".err";
-            StreamWriter stderrStr = File.CreateText(stderrName);
-            stderrStr.Write(sb.ToString());
 
             if (verbose)
             {
@@ -99,6 +93,7 @@ namespace PerformanceExplorer
         }
 
         private string runnerExe;
+        private string cmdExe;
         bool verbose;
     }
 
