@@ -30,9 +30,41 @@ namespace PerformanceExplorer
 
     }
 
+    // Information that identifies a method
+    public struct MethodId : IEquatable<MethodId>
+    {
+        public override bool Equals(object obj)
+        {
+            return (obj is MethodId) && Equals((MethodId)obj);
+        }
+        public bool Equals(MethodId other)
+        {
+            return (this.Token == other.Token && this.Hash == other.Hash);
+        }
+
+        public override int GetHashCode()
+        {
+            int hash = 23;
+            hash = hash * 31 + (int)Token;
+            hash = hash * 31 + (int)Hash;
+            return hash;
+        }
+
+        public uint Token;
+        public uint Hash;
+    }
+
     // A method seen either in jitting or inlining
     public class Method
     {
+        public MethodId getId()
+        {
+            MethodId id = new MethodId();
+            id.Token = Token;
+            id.Hash = Hash;
+            return id;
+        }
+
         public uint Token;
         public uint Hash;
         public uint InlineCount;
@@ -42,6 +74,9 @@ namespace PerformanceExplorer
         public uint SizeEstimate;
         public uint TimeEstimate;
         public Inline[] Inlines;
+        public void MarkAsDuplicate() { IsDuplicate = true; }
+        public bool CheckIsDuplicate() { return IsDuplicate; }
+        private bool IsDuplicate;
     }
 
     // A node in an inline tree.
@@ -148,6 +183,11 @@ namespace PerformanceExplorer
             b.FullPath = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality\benchi\8queens\8queens\8queens.exe";
             b.ExitCode = 100;
 
+            // Can't handle Roslyn yet. The inline Xml gets messed up by multithreading :-(
+            //b.ShortName = "CscBench";
+            //b.FullPath = @"C:\repos\coreclr\bin\tests\Windows_NT.x64.Release\JIT\Performance\CodeQuality\Roslyn\CscBench\CscBench.exe";
+            //b.ExitCode = 100;
+
             p.BuildBaseModel(r, b);
             p.BuildDefaultModel(r, b);
             p.BuildFullModel(r, b);
@@ -171,12 +211,50 @@ namespace PerformanceExplorer
 
             if (results.Success)
             {
+                // Parse base inline xml
                 XmlSerializer x = new XmlSerializer(typeof(InlineForest));
                 InlineForest f;
                 Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
                 f = (InlineForest)x.Deserialize(xmlFile);
                 Console.WriteLine("*** Base config has {0} methods", f.Methods.Length);
                 results.InlineForest = f;
+
+                // Determine set of unique method Ids
+                Dictionary<MethodId, uint> idCounts = new Dictionary<MethodId, uint>();
+
+                foreach (Method m in f.Methods)
+                {
+                    MethodId id = m.getId();
+                    if (idCounts.ContainsKey(id))
+                    {
+                        idCounts[id]++;
+                    }
+                    else
+                    {
+                        idCounts[id] = 1;
+                    }
+                }
+
+                Console.WriteLine("*** Base config has {0} unique method IDs", idCounts.Count);
+
+                foreach(MethodId m in idCounts.Keys)
+                {
+                    uint count = idCounts[m];
+                    if (count > 1)
+                    {
+                        Console.WriteLine("*** MethodId Token:0x{0:X8} Hash:0x{1:X8} has {2} duplicates", m.Token, m.Hash, count);
+                    }
+                }
+
+                // Mark methods in base results that do not have unique IDs
+                foreach (Method m in f.Methods)
+                {
+                    MethodId id = m.getId();
+                    if (idCounts[id] > 1)
+                    {
+                        m.MarkAsDuplicate();
+                    }
+                }
             }
         }
 
@@ -213,10 +291,36 @@ namespace PerformanceExplorer
             fullConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
             fullConfiguration.Environment["COMPlus_ZapDisable"] = "1";
             fullConfiguration.Environment["COMPlus_JitInlinePolicyFull"] = "1";
-            fullConfiguration.Environment["COMPlus_JitInlineDepthLimit"] = "10";
+            fullConfiguration.Environment["COMPlus_JitInlineDepth"] = "20";
+            fullConfiguration.Environment["COMPlus_JitInlineSize"] = "250";
             fullConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
-            r.RunBenchmark(b, fullConfiguration);
+            Results results = r.RunBenchmark(b, fullConfiguration);
+
+            // Because we're jitting and inlining some methods won't be jitted on
+            // their own at all. To unearth full trees for all methods we need
+            // to iterate. The rough idea is as follows.
+            //
+            // Run with FullPolicy for all methods. This will end up jitting
+            // some subset of methods seen in the base config. Compute this subset,
+            // collect up their trees, and then disable inlining for those methods.
+            // Rerun. This time around some of the methods missed in the first will
+            // be jitted and will grow inline trees. Collect these new trees and
+            // add those methods to the disabled set. Repeat until we've seen all methods.
+            //
+            // Unfortunately we don't have unique IDs for methods. To handle this we
+            // need to determine which methods do have unique IDs.
+
+            if (results.Success)
+            {
+                XmlSerializer x = new XmlSerializer(typeof(InlineForest));
+                InlineForest f;
+                Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
+                f = (InlineForest)x.Deserialize(xmlFile);
+                long inlineCount = f.Methods.Sum(m => m.InlineCount);
+                Console.WriteLine("*** First pass of full config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
+                results.InlineForest = f;
+            }
         }
     }
 }
