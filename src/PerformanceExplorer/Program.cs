@@ -109,6 +109,7 @@ namespace PerformanceExplorer
         public string LogFile;
         public bool Success;
         public InlineForest InlineForest;
+        public Dictionary<MethodId, Method> Methods;
     }
 
     // A mechanism to run the benchmark
@@ -188,9 +189,9 @@ namespace PerformanceExplorer
             //b.FullPath = @"C:\repos\coreclr\bin\tests\Windows_NT.x64.Release\JIT\Performance\CodeQuality\Roslyn\CscBench\CscBench.exe";
             //b.ExitCode = 100;
 
-            p.BuildBaseModel(r, b);
-            p.BuildDefaultModel(r, b);
-            p.BuildFullModel(r, b);
+            Results baseResults = p.BuildBaseModel(r, b);
+            Results defaultResults = p.BuildDefaultModel(r, b);
+            Results fullResults = p.BuildFullModel(r, b, baseResults);
         }
 
         // The base model is one where inlining is disabled.
@@ -198,7 +199,7 @@ namespace PerformanceExplorer
         //
         // An attributed profile of this model helps the tool
         // identify areas for investigation.
-        void BuildBaseModel(Runner r, Benchmark b)
+        Results BuildBaseModel(Runner r, Benchmark b)
         {
             Configuration baseConfiguration = new Configuration("base");
             baseConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
@@ -219,12 +220,15 @@ namespace PerformanceExplorer
                 Console.WriteLine("*** Base config has {0} methods", f.Methods.Length);
                 results.InlineForest = f;
 
-                // Determine set of unique method Ids
+                // Determine set of unique method Ids and build map from ID to method
                 Dictionary<MethodId, uint> idCounts = new Dictionary<MethodId, uint>();
+                Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
 
                 foreach (Method m in f.Methods)
                 {
                     MethodId id = m.getId();
+                    methods[id] = m;
+
                     if (idCounts.ContainsKey(id))
                     {
                         idCounts[id]++;
@@ -235,9 +239,11 @@ namespace PerformanceExplorer
                     }
                 }
 
+                results.Methods = methods;
+
                 Console.WriteLine("*** Base config has {0} unique method IDs", idCounts.Count);
 
-                foreach(MethodId m in idCounts.Keys)
+                foreach (MethodId m in idCounts.Keys)
                 {
                     uint count = idCounts[m];
                     if (count > 1)
@@ -255,13 +261,17 @@ namespace PerformanceExplorer
                         m.MarkAsDuplicate();
                     }
                 }
+
+                return results;
             }
+
+            return null;
         }
 
         // The default model reflects the current jit behavior.
         // Scoring of runs will be relative to this data.
         // The inherent noise level is also estimated here.
-        void BuildDefaultModel(Runner r, Benchmark b)
+        Results BuildDefaultModel(Runner r, Benchmark b)
         {
             Configuration defaultConfiguration = new Configuration("default");
             defaultConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
@@ -279,13 +289,17 @@ namespace PerformanceExplorer
                 long inlineCount = f.Methods.Sum(m => m.InlineCount);
                 Console.WriteLine("*** Default config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
                 results.InlineForest = f;
+
+                return results;
             }
+
+            return null;
         }
 
         // The full model creates an inline forest at some prescribed
         // depth. The inline configurations that will be explored
         // are sub-forests of this full forest.
-        void BuildFullModel(Runner r, Benchmark b)
+        Results BuildFullModel(Runner r, Benchmark b, Results baseResults)
         {
             Configuration fullConfiguration = new Configuration("full");
             fullConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
@@ -320,7 +334,36 @@ namespace PerformanceExplorer
                 long inlineCount = f.Methods.Sum(m => m.InlineCount);
                 Console.WriteLine("*** First pass of full config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
                 results.InlineForest = f;
+
+                // Scan through and look for duplicates and/or methods that don't have inlines.
+                uint leafCount = 0;
+                uint dupCount = 0;
+                uint dupInlines = 0;
+                uint maxInlines = 0;
+                foreach(Method m in f.Methods)
+                {
+                    if (m.InlineCount == 0) leafCount++;
+                    MethodId id = m.getId();
+                    Method base_m = baseResults.Methods[id];
+                    if (base_m.CheckIsDuplicate())
+                    {
+                        dupCount++;
+                        dupInlines += m.InlineCount;
+                    }
+                    else if (m.InlineCount > maxInlines)
+                    {
+                        maxInlines = m.InlineCount;
+                    }
+                }
+
+                uint treeCount = (uint) f.Methods.Length - dupCount - leafCount;
+                uint treeInlineCount = (uint)inlineCount - dupInlines;
+                Console.WriteLine("*** {0} dups, {1} leaves, {2} trees", dupCount, leafCount, treeCount);
+                Console.WriteLine("*** losing {0} inlines from dups, leaving {1} inlines to investigate", dupInlines, treeInlineCount);
+                Console.WriteLine("*** average inline count {0}, max count {1}", treeInlineCount / treeCount, maxInlines);
             }
+
+            return null;
         }
     }
 }
