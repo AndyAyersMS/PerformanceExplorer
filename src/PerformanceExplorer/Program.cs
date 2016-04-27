@@ -3,8 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.IO;
-using System.Threading.Tasks;
-using System.Text;
+using System.Xml.Serialization;
 
 namespace PerformanceExplorer
 {
@@ -31,11 +30,33 @@ namespace PerformanceExplorer
 
     }
 
-    // InlineData describes the inline forest used
-    // for the run.
-    public class InlineData
+    // A method seen either in jitting or inlining
+    public class Method
     {
+        public uint Token;
+        public uint Hash;
+        public uint InlineCount;
+        public uint HotSize;
+        public uint ColdSize;
+        public uint JitTime;
+        public uint SizeEstimate;
+        public uint TimeEstimate;
+        public Inline[] Inlines;
+    }
 
+    // A node in an inline tree.
+    public class Inline
+    {
+        public Inline[] Inlines;
+        public uint MethodToken;
+        public uint Offset;
+        public string Reason;
+    }
+
+    // InlineForest describes the inline forest used for the run.
+    public class InlineForest
+    {
+        public Method[] Methods;
     }
 
     // The benchmark of interest
@@ -43,12 +64,22 @@ namespace PerformanceExplorer
     {
         public string ShortName;
         public string FullPath;
+        public int ExitCode;
+    }
+
+    // The results of running a benchmark
+    public class Results
+    {
+        public int ExitCode;
+        public string LogFile;
+        public bool Success;
+        public InlineForest InlineForest;
     }
 
     // A mechanism to run the benchmark
     public abstract class Runner
     {
-        public abstract void RunBenchmark(Benchmark b, Configuration c);
+        public abstract Results RunBenchmark(Benchmark b, Configuration c);
     }
 
     public class CoreClrRunner : Runner
@@ -58,9 +89,10 @@ namespace PerformanceExplorer
             cmdExe = @"c:\windows\system32\cmd.exe";
             runnerExe = @"c:\repos\coreclr\bin\tests\windows_nt.x64.Release\tests\core_root\corerun.exe";
             verbose = true;
+            veryVerbose = false;
         }
 
-        public override void RunBenchmark(Benchmark b, Configuration c)
+        public override Results RunBenchmark(Benchmark b, Configuration c)
         {
             // Setup process information
             System.Diagnostics.Process runnerProcess = new Process();
@@ -72,12 +104,11 @@ namespace PerformanceExplorer
                 runnerProcess.StartInfo.Environment[envVar] = c.Environment[envVar];
             }
             runnerProcess.StartInfo.Environment["CORE_ROOT"] = Path.GetDirectoryName(runnerExe);
-
-            runnerProcess.StartInfo.Arguments = "/C \"" + runnerExe + " " + b.FullPath + "> " + stderrName + "\"";
+            runnerProcess.StartInfo.Arguments = "/C \"" + runnerExe + " " + b.FullPath + " 2> " + stderrName + "\"";
             runnerProcess.StartInfo.WorkingDirectory = System.IO.Path.GetDirectoryName(b.FullPath);
             runnerProcess.StartInfo.UseShellExecute = false;
 
-            if (verbose)
+            if (veryVerbose)
             {
                 Console.WriteLine("CoreCLR: launching " + runnerProcess.StartInfo.Arguments);
             }
@@ -87,16 +118,23 @@ namespace PerformanceExplorer
 
             if (verbose)
             {
-                Console.WriteLine("CoreCLR: Finished running {0} -- configuration: {1}, exit code: {2}",
-                    b.ShortName, c.Name, runnerProcess.ExitCode);
+                Console.WriteLine("CoreCLR: Finished running {0} -- configuration: {1}, exit code: {2} (expected {3})",
+                    b.ShortName, c.Name, runnerProcess.ExitCode, b.ExitCode);
             }
+
+            Results results = new Results();
+            results.Success = (b.ExitCode == runnerProcess.ExitCode);
+            results.ExitCode = b.ExitCode;
+            results.LogFile = stderrName;
+
+            return results;
         }
 
         private string runnerExe;
         private string cmdExe;
         bool verbose;
+        bool veryVerbose;
     }
-
 
     public class Program
     {
@@ -108,6 +146,7 @@ namespace PerformanceExplorer
 
             b.ShortName = "8Queens";
             b.FullPath = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality\benchi\8queens\8queens\8queens.exe";
+            b.ExitCode = 100;
 
             p.BuildBaseModel(r, b);
             p.BuildDefaultModel(r, b);
@@ -128,7 +167,17 @@ namespace PerformanceExplorer
             baseConfiguration.Environment["COMPlus_JitInlineLimit"] = "0";
             baseConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
-            r.RunBenchmark(b, baseConfiguration);
+            Results results = r.RunBenchmark(b, baseConfiguration);
+
+            if (results.Success)
+            {
+                XmlSerializer x = new XmlSerializer(typeof(InlineForest));
+                InlineForest f;
+                Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
+                f = (InlineForest)x.Deserialize(xmlFile);
+                Console.WriteLine("*** Base config has {0} methods", f.Methods.Length);
+                results.InlineForest = f;
+            }
         }
 
         // The default model reflects the current jit behavior.
@@ -141,7 +190,18 @@ namespace PerformanceExplorer
             defaultConfiguration.Environment["COMPlus_ZapDisable"] = "1";
             defaultConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
-            r.RunBenchmark(b, defaultConfiguration);
+            Results results = r.RunBenchmark(b, defaultConfiguration);
+
+            if (results.Success)
+            {
+                XmlSerializer x = new XmlSerializer(typeof(InlineForest));
+                InlineForest f;
+                Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
+                f = (InlineForest)x.Deserialize(xmlFile);
+                long inlineCount = f.Methods.Sum(m => m.InlineCount);
+                Console.WriteLine("*** Default config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
+                results.InlineForest = f;
+            }
         }
 
         // The full model creates an inline forest at some prescribed
