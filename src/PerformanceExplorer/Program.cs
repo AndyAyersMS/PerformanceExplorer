@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.IO;
 using System.Xml.Serialization;
+using System.Text;
 
 namespace PerformanceExplorer
 {
@@ -39,7 +40,7 @@ namespace PerformanceExplorer
         }
         public bool Equals(MethodId other)
         {
-            return (this.Token == other.Token && this.Hash == other.Hash);
+            return (this.Token == other.Token); // && this.Hash == other.Hash);
         }
 
         public override int GetHashCode()
@@ -336,14 +337,24 @@ namespace PerformanceExplorer
                 results.InlineForest = f;
 
                 // Scan through and look for duplicates and/or methods that don't have inlines.
+                // Build string with excluded hashes for all methods so we can disable inlining in them in the next iteration.
+                StringBuilder sb = new StringBuilder();
                 uint leafCount = 0;
                 uint dupCount = 0;
                 uint dupInlines = 0;
                 uint maxInlines = 0;
                 foreach(Method m in f.Methods)
                 {
-                    if (m.InlineCount == 0) leafCount++;
+                    sb.Append(' ');
+                    sb.Append(m.Hash);
+
+                    if (m.InlineCount == 0)
+                    {
+                        leafCount++;
+                    }
+
                     MethodId id = m.getId();
+
                     Method base_m = baseResults.Methods[id];
                     if (base_m.CheckIsDuplicate())
                     {
@@ -361,6 +372,30 @@ namespace PerformanceExplorer
                 Console.WriteLine("*** {0} dups, {1} leaves, {2} trees", dupCount, leafCount, treeCount);
                 Console.WriteLine("*** losing {0} inlines from dups, leaving {1} inlines to investigate", dupInlines, treeInlineCount);
                 Console.WriteLine("*** average inline count {0}, max count {1}", treeInlineCount / treeCount, maxInlines);
+
+                string excludeString = sb.ToString();
+                Console.WriteLine("*** exclude string: {0}\n", excludeString);
+
+                Configuration fullConfiguration1 = new Configuration("full-1");
+                fullConfiguration1.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                fullConfiguration1.Environment["COMPlus_ZapDisable"] = "1";
+                fullConfiguration1.Environment["COMPlus_JitInlinePolicyFull"] = "1";
+                fullConfiguration1.Environment["COMPlus_JitInlineDepth"] = "20";
+                fullConfiguration1.Environment["COMPlus_JitInlineSize"] = "250";
+                fullConfiguration1.Environment["COMPlus_JitInlineDumpXml"] = "1";
+                fullConfiguration1.Environment["COMPlus_JitNoInlineRange"] = excludeString;
+
+                Results results1 = r.RunBenchmark(b, fullConfiguration1);
+
+                if (results1.Success)
+                {
+                    XmlSerializer x1 = new XmlSerializer(typeof(InlineForest));
+                    InlineForest f1;
+                    Stream xmlFile1 = new FileStream(results1.LogFile, FileMode.Open);
+                    f1 = (InlineForest)x1.Deserialize(xmlFile1);
+                    long inlineCount1 = f1.Methods.Sum(m => m.InlineCount);
+                    Console.WriteLine("*** Second pass of full config has {0} methods, {1} inlines", f1.Methods.Length, inlineCount1);
+                }
             }
 
             return null;
