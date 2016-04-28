@@ -84,7 +84,7 @@ namespace PerformanceExplorer
     public class Inline
     {
         public Inline[] Inlines;
-        public uint MethodToken;
+        public uint Token;
         public uint Offset;
         public string Reason;
     }
@@ -134,7 +134,7 @@ namespace PerformanceExplorer
             // Setup process information
             System.Diagnostics.Process runnerProcess = new Process();
             runnerProcess.StartInfo.FileName = cmdExe;
-            string stderrName = c.ResultsDirectory + @"\" + b.ShortName + "-" + c.Name + ".err";
+            string stderrName = c.ResultsDirectory + @"\" + b.ShortName + "-" + c.Name + ".xml";
 
             foreach (string envVar in c.Environment.Keys)
             {
@@ -188,6 +188,10 @@ namespace PerformanceExplorer
             // Can't handle Roslyn yet. The inline Xml gets messed up by multithreading :-(
             //b.ShortName = "CscBench";
             //b.FullPath = @"C:\repos\coreclr\bin\tests\Windows_NT.x64.Release\JIT\Performance\CodeQuality\Roslyn\CscBench\CscBench.exe";
+            //b.ExitCode = 100;
+
+            //b.ShortName = "Linq";
+            //b.FullPath = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality\Linq\Linq\Linq.exe";
             //b.ExitCode = 100;
 
             Results baseResults = p.BuildBaseModel(r, b);
