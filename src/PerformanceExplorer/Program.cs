@@ -40,7 +40,7 @@ namespace PerformanceExplorer
         }
         public bool Equals(MethodId other)
         {
-            return (this.Token == other.Token); // && this.Hash == other.Hash);
+            return (this.Token == other.Token && this.Hash == other.Hash);
         }
 
         public override int GetHashCode()
@@ -302,16 +302,7 @@ namespace PerformanceExplorer
         // are sub-forests of this full forest.
         Results BuildFullModel(Runner r, Benchmark b, Results baseResults)
         {
-            Configuration fullConfiguration = new Configuration("full");
-            fullConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
-            fullConfiguration.Environment["COMPlus_ZapDisable"] = "1";
-            fullConfiguration.Environment["COMPlus_JitInlinePolicyFull"] = "1";
-            fullConfiguration.Environment["COMPlus_JitInlineDepth"] = "20";
-            fullConfiguration.Environment["COMPlus_JitInlineSize"] = "250";
-            fullConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
-
-            Results results = r.RunBenchmark(b, fullConfiguration);
-
+            string resultsDir = @"c:\repos\PerformanceExplorer\results";
             // Because we're jitting and inlining some methods won't be jitted on
             // their own at all. To unearth full trees for all methods we need
             // to iterate. The rough idea is as follows.
@@ -326,79 +317,128 @@ namespace PerformanceExplorer
             // Unfortunately we don't have unique IDs for methods. To handle this we
             // need to determine which methods do have unique IDs.
 
-            if (results.Success)
+            // This is the count of base methods with unique IDs.
+            int methodCount = baseResults.Methods.Count;
+
+            // We'll collect up these methods with their full trees here.
+            HashSet<MethodId> fullMethodIds = new HashSet<MethodId>();
+            List<Method> fullMethods = new List<Method>(methodCount);
+            uint iteration = 0;
+            uint maxInlineCount = 0;
+            uint leafMethodCount = 0;
+            uint newMethodCount = 0;
+
+            while (fullMethodIds.Count < methodCount + newMethodCount)
             {
-                XmlSerializer x = new XmlSerializer(typeof(InlineForest));
-                InlineForest f;
-                Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
-                f = (InlineForest)x.Deserialize(xmlFile);
-                long inlineCount = f.Methods.Sum(m => m.InlineCount);
-                Console.WriteLine("*** First pass of full config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
-                results.InlineForest = f;
+                iteration++;
 
-                // Scan through and look for duplicates and/or methods that don't have inlines.
-                // Build string with excluded hashes for all methods so we can disable inlining in them in the next iteration.
-                StringBuilder sb = new StringBuilder();
-                uint leafCount = 0;
-                uint dupCount = 0;
-                uint dupInlines = 0;
-                uint maxInlines = 0;
-                foreach(Method m in f.Methods)
+                Console.WriteLine("*** Full config -- iteration {0}, still need trees for {1} out of {2} methods",
+                    iteration, methodCount + newMethodCount - fullMethodIds.Count, methodCount + newMethodCount);
+
+                Configuration fullConfiguration = new Configuration("full-" + iteration);
+                fullConfiguration.ResultsDirectory = resultsDir;
+                fullConfiguration.Environment["COMPlus_ZapDisable"] = "1";
+                fullConfiguration.Environment["COMPlus_JitInlinePolicyFull"] = "1";
+                fullConfiguration.Environment["COMPlus_JitInlineDepth"] = "10";
+                fullConfiguration.Environment["COMPlus_JitInlineSize"] = "200";
+                fullConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
+
+                // Build an exclude string disabiling inlining in all the methods we've
+                // collected so far. If there are no methods yet, don't bother.
+                if (fullMethodIds.Count > 0)
                 {
-                    sb.Append(' ');
-                    sb.Append(m.Hash);
-
-                    if (m.InlineCount == 0)
+                    StringBuilder sb = new StringBuilder();
+                    foreach (MethodId id in fullMethodIds)
                     {
-                        leafCount++;
+                        sb.Append(" ");
+                        sb.Append(id.Hash);
                     }
+                    string excludeString = sb.ToString();
+                    // Console.WriteLine("*** exclude string: {0}\n", excludeString);
+                    fullConfiguration.Environment["COMPlus_JitNoInlineRange"] = excludeString;
+                }
 
+                // Run this iteration
+                Results currentResults = r.RunBenchmark(b, fullConfiguration);
+
+                if (!currentResults.Success)
+                {
+                    break;
+                }
+
+                // Parse the resulting xml
+                XmlSerializer x = new XmlSerializer(typeof(InlineForest));
+                Stream xmlFile = new FileStream(currentResults.LogFile, FileMode.Open);
+                InlineForest f = (InlineForest)x.Deserialize(xmlFile);
+                long inlineCount = f.Methods.Sum(m => m.InlineCount);
+                Console.WriteLine("*** This iteration of full config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
+                currentResults.InlineForest = f;
+
+                // Find the set of new methods that we saw
+                HashSet<MethodId> newMethodIds = new HashSet<MethodId>();
+                foreach (Method m in f.Methods)
+                {
                     MethodId id = m.getId();
 
-                    Method base_m = baseResults.Methods[id];
-                    if (base_m.CheckIsDuplicate())
+                    if (!fullMethodIds.Contains(id) && !newMethodIds.Contains(id))
                     {
-                        dupCount++;
-                        dupInlines += m.InlineCount;
-                    }
-                    else if (m.InlineCount > maxInlines)
-                    {
-                        maxInlines = m.InlineCount;
+                        fullMethods.Add(m);
+                        newMethodIds.Add(id);
+
+                        if (!baseResults.Methods.ContainsKey(id))
+                        {
+                            // Need to figure out why this happens.
+                            //
+                            // Suspect we're inlining force inlines in the base model but not here.
+                            Console.WriteLine("*** full model uncovered new method: Token:0x{0:X8} Hash:0x{1:X8}", m.Token, m.Hash);
+                            newMethodCount++;
+                        }
+
+                        if (m.InlineCount > maxInlineCount)
+                        {
+                            maxInlineCount = m.InlineCount;
+                        }
+
+                        if (m.InlineCount == 0)
+                        {
+                            leafMethodCount++;
+                        }
                     }
                 }
 
-                uint treeCount = (uint) f.Methods.Length - dupCount - leafCount;
-                uint treeInlineCount = (uint)inlineCount - dupInlines;
-                Console.WriteLine("*** {0} dups, {1} leaves, {2} trees", dupCount, leafCount, treeCount);
-                Console.WriteLine("*** losing {0} inlines from dups, leaving {1} inlines to investigate", dupInlines, treeInlineCount);
-                Console.WriteLine("*** average inline count {0}, max count {1}", treeInlineCount / treeCount, maxInlines);
+                Console.WriteLine("*** found {0} new methods", newMethodIds.Count);
 
-                string excludeString = sb.ToString();
-                Console.WriteLine("*** exclude string: {0}\n", excludeString);
-
-                Configuration fullConfiguration1 = new Configuration("full-1");
-                fullConfiguration1.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
-                fullConfiguration1.Environment["COMPlus_ZapDisable"] = "1";
-                fullConfiguration1.Environment["COMPlus_JitInlinePolicyFull"] = "1";
-                fullConfiguration1.Environment["COMPlus_JitInlineDepth"] = "20";
-                fullConfiguration1.Environment["COMPlus_JitInlineSize"] = "250";
-                fullConfiguration1.Environment["COMPlus_JitInlineDumpXml"] = "1";
-                fullConfiguration1.Environment["COMPlus_JitNoInlineRange"] = excludeString;
-
-                Results results1 = r.RunBenchmark(b, fullConfiguration1);
-
-                if (results1.Success)
+                if (newMethodIds.Count == 0)
                 {
-                    XmlSerializer x1 = new XmlSerializer(typeof(InlineForest));
-                    InlineForest f1;
-                    Stream xmlFile1 = new FileStream(results1.LogFile, FileMode.Open);
-                    f1 = (InlineForest)x1.Deserialize(xmlFile1);
-                    long inlineCount1 = f1.Methods.Sum(m => m.InlineCount);
-                    Console.WriteLine("*** Second pass of full config has {0} methods, {1} inlines", f1.Methods.Length, inlineCount1);
+                    Console.WriteLine("*** bailing out, unable to make forward progress");
+                    break;
                 }
+
+                fullMethodIds.UnionWith(newMethodIds);
             }
 
-            return null;
+            Console.WriteLine("*** Full model complete, took {0} iterations", iteration);
+
+            // Now build the aggregate inline forest....
+            InlineForest fullForest = new InlineForest();
+            fullForest.Methods = fullMethods.ToArray();
+
+            // And consolidate into a results set
+            Results fullResults = new Results();
+            fullResults.InlineForest = fullForest;
+
+            long fullInlineCount = fullForest.Methods.Sum(m => m.InlineCount);
+            uint nonLeafMethodCount = (uint) fullMethods.Count - leafMethodCount;
+            Console.WriteLine("*** Full config has {0} methods, {1} inlines", fullForest.Methods.Length, fullInlineCount);
+            Console.WriteLine("*** {0} leaf methods, {1} methods with inlines, {2} average inline count, {3} max inline count",
+                leafMethodCount, nonLeafMethodCount, fullInlineCount/ nonLeafMethodCount, maxInlineCount );
+
+            // Serialize out the consolidated set of trees
+            XmlSerializer xo = new XmlSerializer(typeof(InlineForest));
+            Stream xmlOutFile = new FileStream(Path.Combine(resultsDir, b.ShortName + "-full-consolidated.xml"), FileMode.Create);
+            xo.Serialize(xmlOutFile, fullForest);
+
+            return fullResults;
         }
     }
 }
