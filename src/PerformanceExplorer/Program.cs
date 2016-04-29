@@ -66,6 +66,16 @@ namespace PerformanceExplorer
             return id;
         }
 
+        public double NumSubtrees()
+        {
+            double result = 1;
+            foreach (Inline i in Inlines)
+            {
+                result *= (1 + i.NumSubtrees());
+            }
+            return result;
+        }
+
         public uint Token;
         public uint Hash;
         public uint InlineCount;
@@ -83,6 +93,15 @@ namespace PerformanceExplorer
     // A node in an inline tree.
     public class Inline
     {
+        public double NumSubtrees()
+        {
+            double result = 1;
+            foreach (Inline i in Inlines)
+            {
+                result *= (1 + i.NumSubtrees());
+            }
+            return result;
+        }
         public Inline[] Inlines;
         public uint Token;
         public uint Offset;
@@ -222,7 +241,8 @@ namespace PerformanceExplorer
                 InlineForest f;
                 Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
                 f = (InlineForest)x.Deserialize(xmlFile);
-                Console.WriteLine("*** Base config has {0} methods", f.Methods.Length);
+                long inlineCount = f.Methods.Sum(m => m.InlineCount);
+                Console.WriteLine("*** Base config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
                 results.InlineForest = f;
 
                 // Determine set of unique method Ids and build map from ID to method
@@ -331,6 +351,7 @@ namespace PerformanceExplorer
             uint maxInlineCount = 0;
             uint leafMethodCount = 0;
             uint newMethodCount = 0;
+            Method maxInlineMethod = null;
 
             while (fullMethodIds.Count < methodCount + newMethodCount)
             {
@@ -378,6 +399,7 @@ namespace PerformanceExplorer
                 Console.WriteLine("*** This iteration of full config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
                 currentResults.InlineForest = f;
 
+
                 // Find the set of new methods that we saw
                 HashSet<MethodId> newMethodIds = new HashSet<MethodId>();
                 foreach (Method m in f.Methods)
@@ -401,6 +423,7 @@ namespace PerformanceExplorer
                         if (m.InlineCount > maxInlineCount)
                         {
                             maxInlineCount = m.InlineCount;
+                            maxInlineMethod = m;
                         }
 
                         if (m.InlineCount == 0)
@@ -434,8 +457,10 @@ namespace PerformanceExplorer
             long fullInlineCount = fullForest.Methods.Sum(m => m.InlineCount);
             uint nonLeafMethodCount = (uint) fullMethods.Count - leafMethodCount;
             Console.WriteLine("*** Full config has {0} methods, {1} inlines", fullForest.Methods.Length, fullInlineCount);
-            Console.WriteLine("*** {0} leaf methods, {1} methods with inlines, {2} average inline count, {3} max inline count",
-                leafMethodCount, nonLeafMethodCount, fullInlineCount/ nonLeafMethodCount, maxInlineCount );
+            Console.WriteLine("*** {0} leaf methods, {1} methods with inlines, {2} average inline count",
+                leafMethodCount, nonLeafMethodCount, fullInlineCount/ nonLeafMethodCount);
+            Console.WriteLine("*** {0} max inline count for method 0x{1:X8} -- {2} subtrees", 
+                maxInlineCount, maxInlineMethod.Token, maxInlineMethod.NumSubtrees());
 
             // Serialize out the consolidated set of trees
             XmlSerializer xo = new XmlSerializer(typeof(InlineForest));
