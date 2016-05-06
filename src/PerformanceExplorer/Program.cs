@@ -5,6 +5,7 @@ using System.Linq;
 using System.IO;
 using System.Xml.Serialization;
 using System.Text;
+using System.Xml.Linq;
 
 namespace PerformanceExplorer
 {
@@ -41,7 +42,7 @@ namespace PerformanceExplorer
         }
 
         // How many runs to use in gathering perf data
-        public static int Iterations = 5;
+        public static int Iterations = 1;
         public double[] ExecutionTimes;
 
         public double MedianExecutionTime()
@@ -221,12 +222,149 @@ namespace PerformanceExplorer
         bool veryVerbose;
     }
 
+    public class XunitPerfRunner : Runner
+    {
+        public XunitPerfRunner()
+        {
+            verbose = true;
+
+            SetupSandbox();
+        }
+
+        void SetupSandbox()
+        {
+            // Only do this once per run
+            if (sandboxIsSetup)
+            {
+                return;
+            }
+
+            if (Directory.Exists(sandboxDir))
+            {
+                if (verbose)
+                {
+                    Console.WriteLine("Cleaning old xunit-perf sandbox '{0}'", sandboxDir);
+                }
+                Directory.Delete(sandboxDir, true);
+            }
+
+            if (verbose)
+            {
+                Console.WriteLine("Creating new xunit-perf sandbox '{0}'", sandboxDir);
+            }
+            Directory.CreateDirectory(sandboxDir);
+            DirectoryInfo sandboxDirectoryInfo = new DirectoryInfo(sandboxDir);
+
+            // Copy over xunit packages
+            string xUnitPerfRunner = Path.Combine(coreclrRoot, @"packages\Microsoft.DotNet.xunit.performance.runner.Windows\1.0.0-alpha-build0029\tools");
+            string xUnitPerfConsole = Path.Combine(coreclrRoot, @"packages\xunit.console.netcore\1.0.2-prerelease-00101\runtimes\any\native");
+            string xUnitPerfAnalysis = Path.Combine(coreclrRoot, @"packages\Microsoft.DotNet.xunit.performance.analysis\1.0.0-alpha-build0029\tools");
+
+            CopyAll(new DirectoryInfo(xUnitPerfRunner), sandboxDirectoryInfo);
+            CopyAll(new DirectoryInfo(xUnitPerfConsole), sandboxDirectoryInfo);
+            CopyAll(new DirectoryInfo(xUnitPerfAnalysis), sandboxDirectoryInfo);
+            CopyAll(new DirectoryInfo(testOverlayRoot), sandboxDirectoryInfo);
+
+            sandboxIsSetup = true;
+        }
+
+        public static void CopyAll(DirectoryInfo source, DirectoryInfo target)
+        {
+            Directory.CreateDirectory(target.FullName);
+
+            // Copy each file into the new directory.
+            foreach (FileInfo fi in source.GetFiles())
+            {
+                fi.CopyTo(Path.Combine(target.FullName, fi.Name), true);
+            }
+
+            // Copy each subdirectory using recursion.
+            foreach (DirectoryInfo diSourceSubDir in source.GetDirectories())
+            {
+                DirectoryInfo nextTargetSubDir =
+                    target.CreateSubdirectory(diSourceSubDir.Name);
+                CopyAll(diSourceSubDir, nextTargetSubDir);
+            }
+        }
+
+        public override Results RunBenchmark(Benchmark b, Configuration c)
+        {
+            // Copy benchmark to sandbox
+            string benchmarkFile = Path.GetFileName(b.FullPath);
+            File.Copy(b.FullPath, Path.Combine(sandboxDir, benchmarkFile), true);
+
+            // Setup process information
+            System.Diagnostics.Process runnerProcess = new Process();
+            runnerProcess.StartInfo.FileName = Path.Combine(sandboxDir, "xunit.performance.run.exe");
+            string perfName = c.Name + "-" + b.ShortName;
+
+            foreach (string envVar in c.Environment.Keys)
+            {
+                runnerProcess.StartInfo.Environment[envVar] = c.Environment[envVar];
+            }
+            runnerProcess.StartInfo.Environment["CORE_ROOT"] = sandboxDir;
+            runnerProcess.StartInfo.Arguments = benchmarkFile + 
+                " -runner xunit.console.netcore.exe -runnerhost corerun.exe -runid " + perfName;
+            runnerProcess.StartInfo.WorkingDirectory = sandboxDir;
+            runnerProcess.StartInfo.UseShellExecute = false;
+
+            if (veryVerbose)
+            {
+                Console.WriteLine("xUnitPerf: launching " + runnerProcess.StartInfo.Arguments);
+            }
+
+            runnerProcess.Start();
+            runnerProcess.WaitForExit();
+
+            if (verbose)
+            {
+                Console.WriteLine("xUnitPerf: Finished running {0} -- configuration: {1}, exit code: {2} (expected {3})",
+                    b.ShortName, c.Name, runnerProcess.ExitCode, b.ExitCode);
+            }
+
+            // Parse iterations out of perf-*.xml
+            string xmlPerfResultsFile = Path.Combine(sandboxDir, perfName) + ".xml";
+            XElement root = XElement.Load(xmlPerfResultsFile);
+
+            IEnumerable<double> executionTimes =
+                from el in root.Descendants("iteration")
+                where (string)el.Attribute("index") != "0"
+                select Double.Parse((string)el.Attribute("Duration"));
+
+            double avgTime = 0;
+            if (executionTimes.Count() > 0)
+            {
+                avgTime = executionTimes.Average();
+            }
+            else
+            {
+                Console.WriteLine("No perf data in {0} ?", xmlPerfResultsFile);
+            }
+
+            Results results = new Results();
+            results.Success = (b.ExitCode == runnerProcess.ExitCode);
+            results.ExitCode = b.ExitCode;
+            results.LogFile = "";
+            results.ExecutionTime = avgTime;
+
+            return results;
+        }
+
+        static string sandboxDir = @"c:\repos\PerformanceExplorer\sandbox";
+        static string coreclrRoot = @"c:\repos\coreclr";
+        static string testOverlayRoot = Path.Combine(coreclrRoot, @"bin\tests\Windows_NT.x64.Release\tests\Core_Root");
+        static bool sandboxIsSetup;
+        bool verbose;
+        bool veryVerbose;
+    }
+
     public class Program
     {
         public static int Main(string[] args)
         {
             Program p = new Program();
             Runner r = new CoreClrRunner();
+            Runner x = new XunitPerfRunner();
             Benchmark b = new Benchmark();
 
             b.ShortName = "8Queens";
@@ -246,14 +384,14 @@ namespace PerformanceExplorer
             //b.FullPath = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality\Linq\Linq\Linq.exe";
             //b.ExitCode = 100;
 
-            Results baseResults = p.BuildBaseModel(r, b);
+            Results baseResults = p.BuildBaseModel(r, x, b);
             if (baseResults == null)
             {
                 Console.WriteLine("Exiting with failure");
                 return -1;
             }
 
-            Results defaultResults = p.BuildDefaultModel(r, b);
+            Results defaultResults = p.BuildDefaultModel(r, x, b);
             if (defaultResults == null)
             {
                 Console.WriteLine("Exiting with failure");
@@ -276,7 +414,7 @@ namespace PerformanceExplorer
         //
         // An attributed profile of this model helps the tool
         // identify areas for investigation.
-        Results BuildBaseModel(Runner r, Benchmark b)
+        Results BuildBaseModel(Runner r, Runner x, Benchmark b)
         {
             Configuration baseConfiguration = new Configuration("base");
             baseConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
@@ -293,12 +431,12 @@ namespace PerformanceExplorer
             }
 
             // Parse base inline xml
-            XmlSerializer x = new XmlSerializer(typeof(InlineForest));
+            XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
             InlineForest f;
             Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
             try
             {
-                f = (InlineForest) x.Deserialize(xmlFile);
+                f = (InlineForest) xml.Deserialize(xmlFile);
             }
             catch (System.Exception ex)
             {
@@ -359,7 +497,7 @@ namespace PerformanceExplorer
             {
                 Configuration basePerfConfiguration = new Configuration("base-perf-" + i);
                 basePerfConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
-                Results perfResults = r.RunBenchmark(b, basePerfConfiguration);
+                Results perfResults = x.RunBenchmark(b, basePerfConfiguration);
                 basePerf.ExecutionTimes[i] = perfResults.ExecutionTime;
             }
 
@@ -371,7 +509,7 @@ namespace PerformanceExplorer
         // The default model reflects the current jit behavior.
         // Scoring of runs will be relative to this data.
         // The inherent noise level is also estimated here.
-        Results BuildDefaultModel(Runner r, Benchmark b)
+        Results BuildDefaultModel(Runner r, Runner x, Benchmark b)
         {
             Configuration defaultConfiguration = new Configuration("default");
             defaultConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
@@ -385,10 +523,10 @@ namespace PerformanceExplorer
                 return null;
             }
 
-            XmlSerializer x = new XmlSerializer(typeof(InlineForest));
+            XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
             InlineForest f;
             Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
-            f = (InlineForest)x.Deserialize(xmlFile);
+            f = (InlineForest) xml.Deserialize(xmlFile);
             long inlineCount = f.Methods.Sum(m => m.InlineCount);
             Console.WriteLine("*** Default config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
             results.InlineForest = f;
@@ -400,7 +538,7 @@ namespace PerformanceExplorer
             {
                 Configuration defaultPerfConfiguration = new Configuration("default-perf-" + i);
                 defaultPerfConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
-                Results perfResults = r.RunBenchmark(b, defaultPerfConfiguration);
+                Results perfResults = x.RunBenchmark(b, defaultPerfConfiguration);
                 defaultPerf.ExecutionTimes[i] = perfResults.ExecutionTime;
             }
 
