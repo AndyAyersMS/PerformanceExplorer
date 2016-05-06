@@ -12,11 +12,18 @@ namespace PerformanceExplorer
     // used to perform a particular run.
     public class Configuration
     {
+        public static bool DisableZap = false;
+
         public Configuration(string name)
         {
             Name = name;
             Environment = new Dictionary<string, string>();
             ResultsDirectory = @"c:\home";
+
+            if (DisableZap)
+            {
+                Environment["COMPlus_ZapDisable"] = "1";
+            }
         }
 
         public string Name;
@@ -28,7 +35,20 @@ namespace PerformanceExplorer
     // measurements for run
     public class PerformanceData
     {
+        public PerformanceData()
+        {
+            ExecutionTimes = new double[Iterations];
+        }
 
+        // How many runs to use in gathering perf data
+        public static int Iterations = 5;
+        public double[] ExecutionTimes;
+
+        public double MedianExecutionTime()
+        {
+            Array.Sort(ExecutionTimes);
+            return ExecutionTimes[Iterations/2];
+        }
     }
 
     // Information that identifies a method
@@ -130,6 +150,7 @@ namespace PerformanceExplorer
         public bool Success;
         public InlineForest InlineForest;
         public Dictionary<MethodId, Method> Methods;
+        public double ExecutionTime;
     }
 
     // A mechanism to run the benchmark
@@ -150,6 +171,13 @@ namespace PerformanceExplorer
 
         public override Results RunBenchmark(Benchmark b, Configuration c)
         {
+            // Make sure there's an exe to run.
+            if (!File.Exists(runnerExe))
+            {
+                Console.WriteLine("Can't find runner exe: '{0}'", runnerExe);
+                return null;
+            }
+
             // Setup process information
             System.Diagnostics.Process runnerProcess = new Process();
             runnerProcess.StartInfo.FileName = cmdExe;
@@ -182,6 +210,7 @@ namespace PerformanceExplorer
             results.Success = (b.ExitCode == runnerProcess.ExitCode);
             results.ExitCode = b.ExitCode;
             results.LogFile = stderrName;
+            results.ExecutionTime = runnerProcess.ExitTime.Subtract(runnerProcess.StartTime).TotalMilliseconds;
 
             return results;
         }
@@ -194,7 +223,7 @@ namespace PerformanceExplorer
 
     public class Program
     {
-        public static void Main(string[] args)
+        public static int Main(string[] args)
         {
             Program p = new Program();
             Runner r = new CoreClrRunner();
@@ -202,6 +231,10 @@ namespace PerformanceExplorer
 
             b.ShortName = "8Queens";
             b.FullPath = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality\benchi\8queens\8queens\8queens.exe";
+            b.ExitCode = 100;
+
+            b.ShortName = "NDhrystone";
+            b.FullPath = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality\benchi\NDhrystone\NDhrystone\NDhrystone.exe";
             b.ExitCode = 100;
 
             // Can't handle Roslyn yet. The inline Xml gets messed up by multithreading :-(
@@ -214,8 +247,28 @@ namespace PerformanceExplorer
             //b.ExitCode = 100;
 
             Results baseResults = p.BuildBaseModel(r, b);
+            if (baseResults == null)
+            {
+                Console.WriteLine("Exiting with failure");
+                return -1;
+            }
+
             Results defaultResults = p.BuildDefaultModel(r, b);
+            if (defaultResults == null)
+            {
+                Console.WriteLine("Exiting with failure");
+                return -1;
+            }
+
             Results fullResults = p.BuildFullModel(r, b, baseResults);
+            if (fullResults == null)
+            {
+                Console.WriteLine("Exiting with failure");
+                return -1;
+            }
+
+            Console.WriteLine("Exiting with success");
+            return 100;
         }
 
         // The base model is one where inlining is disabled.
@@ -227,70 +280,92 @@ namespace PerformanceExplorer
         {
             Configuration baseConfiguration = new Configuration("base");
             baseConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
-            baseConfiguration.Environment["COMPlus_ZapDisable"] = "1";
             baseConfiguration.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
             baseConfiguration.Environment["COMPlus_JitInlineLimit"] = "0";
             baseConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
             Results results = r.RunBenchmark(b, baseConfiguration);
 
-            if (results.Success)
+            if (results == null || !results.Success)
             {
-                // Parse base inline xml
-                XmlSerializer x = new XmlSerializer(typeof(InlineForest));
-                InlineForest f;
-                Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
-                f = (InlineForest)x.Deserialize(xmlFile);
-                long inlineCount = f.Methods.Sum(m => m.InlineCount);
-                Console.WriteLine("*** Base config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
-                results.InlineForest = f;
-
-                // Determine set of unique method Ids and build map from ID to method
-                Dictionary<MethodId, uint> idCounts = new Dictionary<MethodId, uint>();
-                Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
-
-                foreach (Method m in f.Methods)
-                {
-                    MethodId id = m.getId();
-                    methods[id] = m;
-
-                    if (idCounts.ContainsKey(id))
-                    {
-                        idCounts[id]++;
-                    }
-                    else
-                    {
-                        idCounts[id] = 1;
-                    }
-                }
-
-                results.Methods = methods;
-
-                Console.WriteLine("*** Base config has {0} unique method IDs", idCounts.Count);
-
-                foreach (MethodId m in idCounts.Keys)
-                {
-                    uint count = idCounts[m];
-                    if (count > 1)
-                    {
-                        Console.WriteLine("*** MethodId Token:0x{0:X8} Hash:0x{1:X8} has {2} duplicates", m.Token, m.Hash, count);
-                    }
-                }
-
-                // Mark methods in base results that do not have unique IDs
-                foreach (Method m in f.Methods)
-                {
-                    MethodId id = m.getId();
-                    if (idCounts[id] > 1)
-                    {
-                        m.MarkAsDuplicate();
-                    }
-                }
-
-                return results;
+                Console.WriteLine("Baseline run failed\n");
+                return null;
             }
 
-            return null;
+            // Parse base inline xml
+            XmlSerializer x = new XmlSerializer(typeof(InlineForest));
+            InlineForest f;
+            Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
+            try
+            {
+                f = (InlineForest) x.Deserialize(xmlFile);
+            }
+            catch (System.Exception ex)
+            {
+                Console.WriteLine("Xml deserialization failed: " + ex.Message);
+                return null;
+            }
+
+            long inlineCount = f.Methods.Sum(m => m.InlineCount);
+            Console.WriteLine("*** Base config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
+            results.InlineForest = f;
+
+            // Determine set of unique method Ids and build map from ID to method
+            Dictionary<MethodId, uint> idCounts = new Dictionary<MethodId, uint>();
+            Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
+
+            foreach (Method m in f.Methods)
+            {
+                MethodId id = m.getId();
+                methods[id] = m;
+
+                if (idCounts.ContainsKey(id))
+                {
+                    idCounts[id]++;
+                }
+                else
+                {
+                    idCounts[id] = 1;
+                }
+            }
+
+            results.Methods = methods;
+
+            Console.WriteLine("*** Base config has {0} unique method IDs", idCounts.Count);
+
+            foreach (MethodId m in idCounts.Keys)
+            {
+                uint count = idCounts[m];
+                if (count > 1)
+                {
+                    Console.WriteLine("*** MethodId Token:0x{0:X8} Hash:0x{1:X8} has {2} duplicates", m.Token, m.Hash, count);
+                }
+            }
+
+            // Mark methods in base results that do not have unique IDs
+            foreach (Method m in f.Methods)
+            {
+                MethodId id = m.getId();
+                if (idCounts[id] > 1)
+                {
+                    m.MarkAsDuplicate();
+                }
+            }
+
+            // Now get baseline perf numbers
+            PerformanceData basePerf = new PerformanceData();
+
+            for (int i = 0; i < PerformanceData.Iterations; i++)
+            {
+                Configuration basePerfConfiguration = new Configuration("base-perf-" + i);
+                basePerfConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                Results perfResults = r.RunBenchmark(b, basePerfConfiguration);
+                basePerf.ExecutionTimes[i] = perfResults.ExecutionTime;
+            }
+
+            Console.WriteLine("Base perf is {0} milliseconds", basePerf.MedianExecutionTime());
+
+            return results;
         }
 
         // The default model reflects the current jit behavior.
@@ -300,25 +375,39 @@ namespace PerformanceExplorer
         {
             Configuration defaultConfiguration = new Configuration("default");
             defaultConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
-            defaultConfiguration.Environment["COMPlus_ZapDisable"] = "1";
             defaultConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
             Results results = r.RunBenchmark(b, defaultConfiguration);
 
-            if (results.Success)
+            if (results == null || !results.Success)
             {
-                XmlSerializer x = new XmlSerializer(typeof(InlineForest));
-                InlineForest f;
-                Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
-                f = (InlineForest)x.Deserialize(xmlFile);
-                long inlineCount = f.Methods.Sum(m => m.InlineCount);
-                Console.WriteLine("*** Default config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
-                results.InlineForest = f;
-
-                return results;
+                Console.WriteLine("Default run failed\n");
+                return null;
             }
 
-            return null;
+            XmlSerializer x = new XmlSerializer(typeof(InlineForest));
+            InlineForest f;
+            Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
+            f = (InlineForest)x.Deserialize(xmlFile);
+            long inlineCount = f.Methods.Sum(m => m.InlineCount);
+            Console.WriteLine("*** Default config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
+            results.InlineForest = f;
+
+            // Now get default perf numbers
+            PerformanceData defaultPerf = new PerformanceData();
+
+            for (int i = 0; i < PerformanceData.Iterations; i++)
+            {
+                Configuration defaultPerfConfiguration = new Configuration("default-perf-" + i);
+                defaultPerfConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                Results perfResults = r.RunBenchmark(b, defaultPerfConfiguration);
+                defaultPerf.ExecutionTimes[i] = perfResults.ExecutionTime;
+            }
+
+            Console.WriteLine("Default perf is {0} milliseconds", defaultPerf.MedianExecutionTime());
+
+
+            return results;
         }
 
         // The full model creates an inline forest at some prescribed
@@ -352,6 +441,7 @@ namespace PerformanceExplorer
             uint leafMethodCount = 0;
             uint newMethodCount = 0;
             Method maxInlineMethod = null;
+            bool failed = false;
 
             while (fullMethodIds.Count < methodCount + newMethodCount)
             {
@@ -362,7 +452,6 @@ namespace PerformanceExplorer
 
                 Configuration fullConfiguration = new Configuration("full-" + iteration);
                 fullConfiguration.ResultsDirectory = resultsDir;
-                fullConfiguration.Environment["COMPlus_ZapDisable"] = "1";
                 fullConfiguration.Environment["COMPlus_JitInlinePolicyFull"] = "1";
                 fullConfiguration.Environment["COMPlus_JitInlineDepth"] = "10";
                 fullConfiguration.Environment["COMPlus_JitInlineSize"] = "200";
@@ -386,8 +475,10 @@ namespace PerformanceExplorer
                 // Run this iteration
                 Results currentResults = r.RunBenchmark(b, fullConfiguration);
 
-                if (!currentResults.Success)
+                if (currentResults == null ||  !currentResults.Success)
                 {
+                    failed = true;
+                    Console.WriteLine("Full run failed\n");
                     break;
                 }
 
@@ -398,7 +489,6 @@ namespace PerformanceExplorer
                 long inlineCount = f.Methods.Sum(m => m.InlineCount);
                 Console.WriteLine("*** This iteration of full config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
                 currentResults.InlineForest = f;
-
 
                 // Find the set of new methods that we saw
                 HashSet<MethodId> newMethodIds = new HashSet<MethodId>();
@@ -437,11 +527,17 @@ namespace PerformanceExplorer
 
                 if (newMethodIds.Count == 0)
                 {
+                    failed = true;
                     Console.WriteLine("*** bailing out, unable to make forward progress");
                     break;
                 }
 
                 fullMethodIds.UnionWith(newMethodIds);
+            }
+
+            if (failed)
+            {
+                return null;
             }
 
             Console.WriteLine("*** Full model complete, took {0} iterations", iteration);
