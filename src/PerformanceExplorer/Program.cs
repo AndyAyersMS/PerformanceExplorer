@@ -38,18 +38,13 @@ namespace PerformanceExplorer
     {
         public PerformanceData()
         {
-            ExecutionTimes = new double[Iterations];
         }
 
-        // How many runs to use in gathering perf data
+        // Originally this was going to be the per-iteration
+        // resutls, now it is the per-sub benchmark results.
+        // Should really track these by name insted of index.
         public static int Iterations = 1;
         public double[] ExecutionTimes;
-
-        public double MedianExecutionTime()
-        {
-            Array.Sort(ExecutionTimes);
-            return ExecutionTimes[Iterations/2];
-        }
     }
 
     // Information that identifies a method
@@ -141,6 +136,7 @@ namespace PerformanceExplorer
         public string ShortName;
         public string FullPath;
         public int ExitCode;
+        public int SubBenchmarkCount;
     }
 
     // The results of running a benchmark
@@ -151,7 +147,7 @@ namespace PerformanceExplorer
         public bool Success;
         public InlineForest InlineForest;
         public Dictionary<MethodId, Method> Methods;
-        public double ExecutionTime;
+        public PerformanceData Performance;
     }
 
     // A mechanism to run the benchmark
@@ -211,8 +207,12 @@ namespace PerformanceExplorer
             results.Success = (b.ExitCode == runnerProcess.ExitCode);
             results.ExitCode = b.ExitCode;
             results.LogFile = stderrName;
-            results.ExecutionTime = runnerProcess.ExitTime.Subtract(runnerProcess.StartTime).TotalMilliseconds;
+            // We only get oneperf number this way
+            PerformanceData perf = new PerformanceData();
+            perf.ExecutionTimes = new double[1];
+            perf.ExecutionTimes[0] = runnerProcess.ExitTime.Subtract(runnerProcess.StartTime).TotalMilliseconds;
 
+            results.Performance = perf;
             return results;
         }
 
@@ -227,6 +227,7 @@ namespace PerformanceExplorer
         public XunitPerfRunner()
         {
             verbose = true;
+            veryVerbose = false;
 
             SetupSandbox();
         }
@@ -323,29 +324,45 @@ namespace PerformanceExplorer
             }
 
             // Parse iterations out of perf-*.xml
+            // Note: will need something smarter for multiple benchmarks in a binary.
             string xmlPerfResultsFile = Path.Combine(sandboxDir, perfName) + ".xml";
             XElement root = XElement.Load(xmlPerfResultsFile);
+            IEnumerable<XElement> subBenchmarks =
+                from el in root.Descendants("test") select el;
+            double[] perfNumbers = new double[subBenchmarks.Count()];
 
-            IEnumerable<double> executionTimes =
-                from el in root.Descendants("iteration")
-                where (string)el.Attribute("index") != "0"
-                select Double.Parse((string)el.Attribute("Duration"));
+            int i = 0;
+            foreach (XElement sub in subBenchmarks)
+            {
+                IEnumerable<double> executionTimes =
+                    from el in sub.Descendants("iteration")
+                    where (string)el.Attribute("index") != "0"
+                    select Double.Parse((string)el.Attribute("Duration"));
 
-            double avgTime = 0;
-            if (executionTimes.Count() > 0)
-            {
-                avgTime = executionTimes.Average();
-            }
-            else
-            {
-                Console.WriteLine("No perf data in {0} ?", xmlPerfResultsFile);
+                if (executionTimes.Count() > 0)
+                {
+                    double avg = executionTimes.Average();
+                    if (veryVerbose)
+                    {
+                        Console.WriteLine("Perf for {0} was {1} ?", sub.Attribute("name"), avg);
+                    }
+                    perfNumbers[i] = avg;
+                }
+                else
+                {
+                    Console.WriteLine("No perf data for {0} in {1} ?", sub.Attribute("name"), xmlPerfResultsFile);
+                }
+
+                i++;
             }
 
             Results results = new Results();
             results.Success = (b.ExitCode == runnerProcess.ExitCode);
             results.ExitCode = b.ExitCode;
             results.LogFile = "";
-            results.ExecutionTime = avgTime;
+            PerformanceData perf = new PerformanceData();
+            results.Performance = perf;
+            perf.ExecutionTimes = perfNumbers;
 
             return results;
         }
@@ -365,78 +382,143 @@ namespace PerformanceExplorer
             Program p = new Program();
             Runner r = new CoreClrRunner();
             Runner x = new XunitPerfRunner();
-            Benchmark b = new Benchmark();
 
-            b.ShortName = "8Queens";
-            b.FullPath = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality\benchi\8queens\8queens\8queens.exe";
-            b.ExitCode = 100;
+            // Enumerate benchmarks that can be run
+            Dictionary<string, string> benchmarks = new Dictionary<string, string>();
 
-            b.ShortName = "NDhrystone";
-            b.FullPath = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality\benchi\NDhrystone\NDhrystone\NDhrystone.exe";
-            b.ExitCode = 100;
-
-            // Can't handle Roslyn yet. The inline Xml gets messed up by multithreading :-(
-            //b.ShortName = "CscBench";
-            //b.FullPath = @"C:\repos\coreclr\bin\tests\Windows_NT.x64.Release\JIT\Performance\CodeQuality\Roslyn\CscBench\CscBench.exe";
-            //b.ExitCode = 100;
-
-            //b.ShortName = "Linq";
-            //b.FullPath = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality\Linq\Linq\Linq.exe";
-            //b.ExitCode = 100;
-
-            Results baseResults = p.BuildBaseModel(r, x, b);
-            if (baseResults == null)
+            string benchmarkRoot = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality";
+            DirectoryInfo benchmarkRootInfo = new DirectoryInfo(benchmarkRoot);
+            foreach (FileInfo f in benchmarkRootInfo.GetFiles("*.exe", SearchOption.AllDirectories))
             {
-                Console.WriteLine("Exiting with failure");
-                return -1;
+                benchmarks.Add(f.Name, f.FullName);
             }
 
-            Results defaultResults = p.BuildDefaultModel(r, x, b);
-            if (defaultResults == null)
+            // If an arg is passed, run benchmarks that contain that arg as a substring.
+            // Otherwise run them all.
+            List<string> benchmarksToRun = new List<string>();
+
+            if (args.Length == 0)
             {
-                Console.WriteLine("Exiting with failure");
-                return -1;
+                benchmarksToRun.AddRange(benchmarks.Values);
+            }
+            else
+            {
+                Console.WriteLine("Scanning for benchmarks....");
+                foreach (string item in args)
+                {
+                    int beforeCount = benchmarksToRun.Count;
+                    foreach (string benchName in benchmarks.Keys)
+                    {
+                        if (benchmarks[benchName].IndexOf(item, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            benchmarksToRun.Add(benchmarks[benchName]);
+                        }
+                    }
+
+                    if (benchmarksToRun.Count == 0)
+                    {
+                        Console.WriteLine("No benchmark matches {0}", item);
+                    }
+                    else
+                    {
+                        Console.WriteLine("{0} benchmarks matched '{1}'", 
+                                benchmarksToRun.Count - beforeCount, item);
+                    }
+                }
             }
 
-            Results fullResults = p.BuildFullModel(r, b, baseResults);
-            if (fullResults == null)
+            foreach (string s in benchmarksToRun)
             {
-                Console.WriteLine("Exiting with failure");
-                return -1;
+                Benchmark b = new Benchmark();
+                b.ShortName = Path.GetFileName(s);
+                b.FullPath = s;
+                b.ExitCode = 100;
+
+                Results noInlineResults = p.BuildNoInlineModel(r, x, b);
+                if (noInlineResults == null)
+                {
+                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                    continue;
+                }
+
+                Results legacyResults = p.BuildLegacyModel(r, x, b);
+                if (legacyResults == null)
+                {
+                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                    continue;
+                }
+
+                // See impact of LegacyPolicy inlines
+
+                int legacyCount = legacyResults.Performance.ExecutionTimes.Length;
+                int noInlineCount = noInlineResults.Performance.ExecutionTimes.Length;
+
+                if (legacyCount!= noInlineCount)
+                {
+                    Console.WriteLine("Odd, noinline had {0} parts, legacy has {1} parts. " +
+                        "Skipping remainder of work for this benchmark",
+                        noInlineCount, legacyCount);
+                    continue;
+                }
+
+                if (legacyCount == 0)
+                {
+                    Console.WriteLine("Odd, benchmark has no perf data. Skipping");
+                    continue;
+                }
+
+                for (int i = 0; i < legacyCount; i++)
+                {
+                    double legacyTime = legacyResults.Performance.ExecutionTimes[i];
+                    double noinlineTime = noInlineResults.Performance.ExecutionTimes[i];
+                    double improvement = noinlineTime - legacyTime;
+                    string change = improvement > 0 ? "improvement" : "regression";
+                    Console.WriteLine("Test {0}: Legacy Policy perf {1}: {2:0.00} ({3:0.00}%)",
+                        i, change, improvement, improvement / noinlineTime * 100);
+                }
+
+                Results fullResults = p.BuildFullModel(r, b, noInlineResults);
+                if (fullResults == null)
+                {
+                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                    continue;
+                }
             }
 
-            Console.WriteLine("Exiting with success");
             return 100;
         }
 
-        // The base model is one where inlining is disabled.
+        // The noinline model is one where inlining is disabled.
         // The inline forest here is minimal.
         //
         // An attributed profile of this model helps the tool
         // identify areas for investigation.
-        Results BuildBaseModel(Runner r, Runner x, Benchmark b)
+        Results BuildNoInlineModel(Runner r, Runner x, Benchmark b)
         {
-            Configuration baseConfiguration = new Configuration("base");
-            baseConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
-            baseConfiguration.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
-            baseConfiguration.Environment["COMPlus_JitInlineLimit"] = "0";
-            baseConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
+            Console.WriteLine("");
+            Console.WriteLine("---- No Inline Model for {0}", b.ShortName);
 
-            Results results = r.RunBenchmark(b, baseConfiguration);
+            Configuration noInlineConfig = new Configuration("noinline");
+            noInlineConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+            noInlineConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
+            noInlineConfig.Environment["COMPlus_JitInlineLimit"] = "0";
+            noInlineConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
+
+            Results results = r.RunBenchmark(b, noInlineConfig);
 
             if (results == null || !results.Success)
             {
-                Console.WriteLine("Baseline run failed\n");
+                Console.WriteLine("Noinline run failed\n");
                 return null;
             }
 
-            // Parse base inline xml
+            // Parse noinline xml
             XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
             InlineForest f;
             Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
             try
             {
-                f = (InlineForest) xml.Deserialize(xmlFile);
+                f = (InlineForest)xml.Deserialize(xmlFile);
             }
             catch (System.Exception ex)
             {
@@ -445,7 +527,7 @@ namespace PerformanceExplorer
             }
 
             long inlineCount = f.Methods.Sum(m => m.InlineCount);
-            Console.WriteLine("*** Base config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
+            Console.WriteLine("*** Nonline config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
             results.InlineForest = f;
 
             // Determine set of unique method Ids and build map from ID to method
@@ -469,7 +551,7 @@ namespace PerformanceExplorer
 
             results.Methods = methods;
 
-            Console.WriteLine("*** Base config has {0} unique method IDs", idCounts.Count);
+            Console.WriteLine("*** Noinline config has {0} unique method IDs", idCounts.Count);
 
             foreach (MethodId m in idCounts.Keys)
             {
@@ -480,7 +562,7 @@ namespace PerformanceExplorer
                 }
             }
 
-            // Mark methods in base results that do not have unique IDs
+            // Mark methods in noinline results that do not have unique IDs
             foreach (Method m in f.Methods)
             {
                 MethodId id = m.getId();
@@ -490,36 +572,43 @@ namespace PerformanceExplorer
                 }
             }
 
-            // Now get baseline perf numbers
-            PerformanceData basePerf = new PerformanceData();
+            // Now get noinline perf numbers
+            PerformanceData noinlinePerf = new PerformanceData();
+            results.Performance = noinlinePerf;
 
             for (int i = 0; i < PerformanceData.Iterations; i++)
             {
-                Configuration basePerfConfiguration = new Configuration("base-perf-" + i);
-                basePerfConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
-                Results perfResults = x.RunBenchmark(b, basePerfConfiguration);
-                basePerf.ExecutionTimes[i] = perfResults.ExecutionTime;
+                Configuration noinlinePerfConfig = new Configuration("noinline-perf-" + i);
+                noinlinePerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                Results perfResults = x.RunBenchmark(b, noinlinePerfConfig);
+                noinlinePerf.ExecutionTimes = perfResults.Performance.ExecutionTimes;
             }
 
-            Console.WriteLine("Base perf is {0} milliseconds", basePerf.MedianExecutionTime());
+            for (int i = 0; i < noinlinePerf.ExecutionTimes.Length; i++)
+            {
+                Console.WriteLine("Noinline perf for part {0} is {1:0.00} milliseconds", i, noinlinePerf.ExecutionTimes[i]);
+            }
 
             return results;
         }
 
-        // The default model reflects the current jit behavior.
+        // The legacy model reflects the current jit behavior.
         // Scoring of runs will be relative to this data.
         // The inherent noise level is also estimated here.
-        Results BuildDefaultModel(Runner r, Runner x, Benchmark b)
+        Results BuildLegacyModel(Runner r, Runner x, Benchmark b)
         {
-            Configuration defaultConfiguration = new Configuration("default");
-            defaultConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
-            defaultConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
+            Console.WriteLine();
+            Console.WriteLine(" ---- Legacy Model for {0}", b.ShortName);
 
-            Results results = r.RunBenchmark(b, defaultConfiguration);
+            Configuration legacyConfig = new Configuration("legacy");
+            legacyConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+            legacyConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
+
+            Results results = r.RunBenchmark(b, legacyConfig);
 
             if (results == null || !results.Success)
             {
-                Console.WriteLine("Default run failed\n");
+                Console.WriteLine("Legacy run failed\n");
                 return null;
             }
 
@@ -528,22 +617,25 @@ namespace PerformanceExplorer
             Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
             f = (InlineForest) xml.Deserialize(xmlFile);
             long inlineCount = f.Methods.Sum(m => m.InlineCount);
-            Console.WriteLine("*** Default config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
+            Console.WriteLine("*** Legacy config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
             results.InlineForest = f;
 
-            // Now get default perf numbers
-            PerformanceData defaultPerf = new PerformanceData();
+            // Now get legacy perf numbers
+            PerformanceData legacyPerf = new PerformanceData();
+            results.Performance = legacyPerf;
 
             for (int i = 0; i < PerformanceData.Iterations; i++)
             {
-                Configuration defaultPerfConfiguration = new Configuration("default-perf-" + i);
-                defaultPerfConfiguration.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
-                Results perfResults = x.RunBenchmark(b, defaultPerfConfiguration);
-                defaultPerf.ExecutionTimes[i] = perfResults.ExecutionTime;
+                Configuration legacyPerfConfig = new Configuration("legacy-perf-" + i);
+                legacyPerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                Results perfResults = x.RunBenchmark(b, legacyPerfConfig);
+                legacyPerf.ExecutionTimes = perfResults.Performance.ExecutionTimes;
             }
 
-            Console.WriteLine("Default perf is {0} milliseconds", defaultPerf.MedianExecutionTime());
-
+            for (int i = 0; i < legacyPerf.ExecutionTimes.Length; i++)
+            {
+                Console.WriteLine("Legacy perf for part {0} is {1:0.00} milliseconds", i, legacyPerf.ExecutionTimes[i]);
+            }
 
             return results;
         }
@@ -551,15 +643,18 @@ namespace PerformanceExplorer
         // The full model creates an inline forest at some prescribed
         // depth. The inline configurations that will be explored
         // are sub-forests of this full forest.
-        Results BuildFullModel(Runner r, Benchmark b, Results baseResults)
+        Results BuildFullModel(Runner r, Benchmark b, Results noinlineResults)
         {
+            Console.WriteLine();
+            Console.WriteLine(" ---- Full Model for {0}", b.ShortName);
+
             string resultsDir = @"c:\repos\PerformanceExplorer\results";
             // Because we're jitting and inlining some methods won't be jitted on
             // their own at all. To unearth full trees for all methods we need
             // to iterate. The rough idea is as follows.
             //
             // Run with FullPolicy for all methods. This will end up jitting
-            // some subset of methods seen in the base config. Compute this subset,
+            // some subset of methods seen in the noinline config. Compute this subset,
             // collect up their trees, and then disable inlining for those methods.
             // Rerun. This time around some of the methods missed in the first will
             // be jitted and will grow inline trees. Collect these new trees and
@@ -568,8 +663,8 @@ namespace PerformanceExplorer
             // Unfortunately we don't have unique IDs for methods. To handle this we
             // need to determine which methods do have unique IDs.
 
-            // This is the count of base methods with unique IDs.
-            int methodCount = baseResults.Methods.Count;
+            // This is the count of noinline methods with unique IDs.
+            int methodCount = noinlineResults.Methods.Count;
 
             // We'll collect up these methods with their full trees here.
             HashSet<MethodId> fullMethodIds = new HashSet<MethodId>();
@@ -639,11 +734,11 @@ namespace PerformanceExplorer
                         fullMethods.Add(m);
                         newMethodIds.Add(id);
 
-                        if (!baseResults.Methods.ContainsKey(id))
+                        if (!noinlineResults.Methods.ContainsKey(id))
                         {
                             // Need to figure out why this happens.
                             //
-                            // Suspect we're inlining force inlines in the base model but not here.
+                            // Suspect we're inlining force inlines in the noinline model but not here.
                             Console.WriteLine("*** full model uncovered new method: Token:0x{0:X8} Hash:0x{1:X8}", m.Token, m.Hash);
                             newMethodCount++;
                         }
