@@ -33,18 +33,24 @@ namespace PerformanceExplorer
     }
 
     // PerformanceData describes performance
-    // measurements for run
+    // measurements for benchmark runs
     public class PerformanceData
     {
         public PerformanceData()
         {
+            ExecutionTimes = new SortedDictionary<string, double>();
         }
 
-        // Originally this was going to be the per-iteration
-        // resutls, now it is the per-sub benchmark results.
-        // Should really track these by name insted of index.
-        public static int Iterations = 1;
-        public double[] ExecutionTimes;
+        public SortedDictionary<string, double> ExecutionTimes;
+
+        public void Print(string configName)
+        {
+            foreach (string subBench in ExecutionTimes.Keys)
+            {
+                Console.WriteLine("{0} perf for {1} is {2:0.00} milliseconds",
+                    configName, subBench, ExecutionTimes[subBench]);
+            }
+        }
     }
 
     // Information that identifies a method
@@ -142,6 +148,11 @@ namespace PerformanceExplorer
     // The results of running a benchmark
     public class Results
     {
+        public Results()
+        {
+            Performance = new PerformanceData();
+        }
+
         public int ExitCode;
         public string LogFile;
         public bool Success;
@@ -154,6 +165,7 @@ namespace PerformanceExplorer
     public abstract class Runner
     {
         public abstract Results RunBenchmark(Benchmark b, Configuration c);
+        public abstract int Iterations();
     }
 
     public class CoreClrRunner : Runner
@@ -207,13 +219,13 @@ namespace PerformanceExplorer
             results.Success = (b.ExitCode == runnerProcess.ExitCode);
             results.ExitCode = b.ExitCode;
             results.LogFile = stderrName;
-            // We only get oneperf number this way
-            PerformanceData perf = new PerformanceData();
-            perf.ExecutionTimes = new double[1];
-            perf.ExecutionTimes[0] = runnerProcess.ExitTime.Subtract(runnerProcess.StartTime).TotalMilliseconds;
-
-            results.Performance = perf;
+            results.Performance.ExecutionTimes[b.ShortName] = runnerProcess.ExitTime.Subtract(runnerProcess.StartTime).TotalMilliseconds;
             return results;
+        }
+
+        public override int Iterations()
+        {
+            return 1;
         }
 
         private string runnerExe;
@@ -329,9 +341,8 @@ namespace PerformanceExplorer
             XElement root = XElement.Load(xmlPerfResultsFile);
             IEnumerable<XElement> subBenchmarks =
                 from el in root.Descendants("test") select el;
-            double[] perfNumbers = new double[subBenchmarks.Count()];
+            SortedDictionary<string, double> perfNumbers = new SortedDictionary<string, double>();
 
-            int i = 0;
             foreach (XElement sub in subBenchmarks)
             {
                 IEnumerable<double> executionTimes =
@@ -344,27 +355,28 @@ namespace PerformanceExplorer
                     double avg = executionTimes.Average();
                     if (veryVerbose)
                     {
-                        Console.WriteLine("Perf for {0} was {1} ?", sub.Attribute("name"), avg);
+                        Console.WriteLine("Perf for {0} was {1}", sub.Attribute("name"), avg);
                     }
-                    perfNumbers[i] = avg;
+                    perfNumbers[(string)sub.Attribute("name")] = avg;
                 }
                 else
                 {
                     Console.WriteLine("No perf data for {0} in {1} ?", sub.Attribute("name"), xmlPerfResultsFile);
                 }
-
-                i++;
             }
 
             Results results = new Results();
             results.Success = (b.ExitCode == runnerProcess.ExitCode);
             results.ExitCode = b.ExitCode;
             results.LogFile = "";
-            PerformanceData perf = new PerformanceData();
-            results.Performance = perf;
-            perf.ExecutionTimes = perfNumbers;
+            results.Performance.ExecutionTimes = perfNumbers;
 
             return results;
+        }
+
+        public override int Iterations()
+        {
+            return 1;
         }
 
         static string sandboxDir = @"c:\repos\PerformanceExplorer\sandbox";
@@ -450,8 +462,8 @@ namespace PerformanceExplorer
 
                 // See impact of LegacyPolicy inlines
 
-                int legacyCount = legacyResults.Performance.ExecutionTimes.Length;
-                int noInlineCount = noInlineResults.Performance.ExecutionTimes.Length;
+                int legacyCount = legacyResults.Performance.ExecutionTimes.Count;
+                int noInlineCount = noInlineResults.Performance.ExecutionTimes.Count;
 
                 if (legacyCount!= noInlineCount)
                 {
@@ -467,14 +479,14 @@ namespace PerformanceExplorer
                     continue;
                 }
 
-                for (int i = 0; i < legacyCount; i++)
+                foreach (string subBench in legacyResults.Performance.ExecutionTimes.Keys)
                 {
-                    double legacyTime = legacyResults.Performance.ExecutionTimes[i];
-                    double noinlineTime = noInlineResults.Performance.ExecutionTimes[i];
+                    double legacyTime = legacyResults.Performance.ExecutionTimes[subBench];
+                    double noinlineTime = noInlineResults.Performance.ExecutionTimes[subBench];
                     double improvement = noinlineTime - legacyTime;
                     string change = improvement > 0 ? "improvement" : "regression";
-                    Console.WriteLine("Test {0}: Legacy Policy perf {1}: {2:0.00} ({3:0.00}%)",
-                        i, change, improvement, improvement / noinlineTime * 100);
+                    Console.WriteLine("{0}: Legacy Policy perf {1}: {2:0.00} ({3:0.00}%)",
+                        subBench, change, improvement, improvement / noinlineTime * 100);
                 }
 
                 Results fullResults = p.BuildFullModel(r, b, noInlineResults);
@@ -572,22 +584,19 @@ namespace PerformanceExplorer
                 }
             }
 
-            // Now get noinline perf numbers
-            PerformanceData noinlinePerf = new PerformanceData();
-            results.Performance = noinlinePerf;
+            // Get noinline perf numbers
 
-            for (int i = 0; i < PerformanceData.Iterations; i++)
+            for (int i = 0; i < x.Iterations(); i++)
             {
                 Configuration noinlinePerfConfig = new Configuration("noinline-perf-" + i);
                 noinlinePerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
                 Results perfResults = x.RunBenchmark(b, noinlinePerfConfig);
-                noinlinePerf.ExecutionTimes = perfResults.Performance.ExecutionTimes;
+
+                // Should really "merge" the times here.
+                results.Performance= perfResults.Performance;
             }
 
-            for (int i = 0; i < noinlinePerf.ExecutionTimes.Length; i++)
-            {
-                Console.WriteLine("Noinline perf for part {0} is {1:0.00} milliseconds", i, noinlinePerf.ExecutionTimes[i]);
-            }
+            results.Performance.Print(noInlineConfig.Name);
 
             return results;
         }
@@ -621,21 +630,15 @@ namespace PerformanceExplorer
             results.InlineForest = f;
 
             // Now get legacy perf numbers
-            PerformanceData legacyPerf = new PerformanceData();
-            results.Performance = legacyPerf;
-
-            for (int i = 0; i < PerformanceData.Iterations; i++)
+            for (int i = 0; i < x.Iterations(); i++)
             {
                 Configuration legacyPerfConfig = new Configuration("legacy-perf-" + i);
                 legacyPerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
                 Results perfResults = x.RunBenchmark(b, legacyPerfConfig);
-                legacyPerf.ExecutionTimes = perfResults.Performance.ExecutionTimes;
+                results.Performance = perfResults.Performance;
             }
 
-            for (int i = 0; i < legacyPerf.ExecutionTimes.Length; i++)
-            {
-                Console.WriteLine("Legacy perf for part {0} is {1:0.00} milliseconds", i, legacyPerf.ExecutionTimes[i]);
-            }
+            results.Performance.Print(legacyConfig.Name);
 
             return results;
         }
