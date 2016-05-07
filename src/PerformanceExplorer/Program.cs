@@ -489,7 +489,7 @@ namespace PerformanceExplorer
                         subBench, change, improvement, improvement / noinlineTime * 100);
                 }
 
-                Results fullResults = p.BuildFullModel(r, b, noInlineResults);
+                Results fullResults = p.BuildFullModel(r, x, b, noInlineResults);
                 if (fullResults == null)
                 {
                     Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
@@ -507,7 +507,7 @@ namespace PerformanceExplorer
         // identify areas for investigation.
         Results BuildNoInlineModel(Runner r, Runner x, Benchmark b)
         {
-            Console.WriteLine("");
+            Console.WriteLine("----");
             Console.WriteLine("---- No Inline Model for {0}", b.ShortName);
 
             Configuration noInlineConfig = new Configuration("noinline");
@@ -590,6 +590,8 @@ namespace PerformanceExplorer
             {
                 Configuration noinlinePerfConfig = new Configuration("noinline-perf-" + i);
                 noinlinePerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                noinlinePerfConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
+                noinlinePerfConfig.Environment["COMPlus_JitInlineLimit"] = "0";
                 Results perfResults = x.RunBenchmark(b, noinlinePerfConfig);
 
                 // Should really "merge" the times here.
@@ -606,8 +608,8 @@ namespace PerformanceExplorer
         // The inherent noise level is also estimated here.
         Results BuildLegacyModel(Runner r, Runner x, Benchmark b)
         {
-            Console.WriteLine();
-            Console.WriteLine(" ---- Legacy Model for {0}", b.ShortName);
+            Console.WriteLine("----");
+            Console.WriteLine("---- Legacy Model for {0}", b.ShortName);
 
             Configuration legacyConfig = new Configuration("legacy");
             legacyConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
@@ -646,10 +648,10 @@ namespace PerformanceExplorer
         // The full model creates an inline forest at some prescribed
         // depth. The inline configurations that will be explored
         // are sub-forests of this full forest.
-        Results BuildFullModel(Runner r, Benchmark b, Results noinlineResults)
+        Results BuildFullModel(Runner r, Runner x, Benchmark b, Results noinlineResults)
         {
-            Console.WriteLine();
-            Console.WriteLine(" ---- Full Model for {0}", b.ShortName);
+            Console.WriteLine("----");
+            Console.WriteLine("---- Full Model for {0}", b.ShortName);
 
             string resultsDir = @"c:\repos\PerformanceExplorer\results";
             // Because we're jitting and inlining some methods won't be jitted on
@@ -719,9 +721,9 @@ namespace PerformanceExplorer
                 }
 
                 // Parse the resulting xml
-                XmlSerializer x = new XmlSerializer(typeof(InlineForest));
+                XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
                 Stream xmlFile = new FileStream(currentResults.LogFile, FileMode.Open);
-                InlineForest f = (InlineForest)x.Deserialize(xmlFile);
+                InlineForest f = (InlineForest) xml.Deserialize(xmlFile);
                 long inlineCount = f.Methods.Sum(m => m.InlineCount);
                 Console.WriteLine("*** This iteration of full config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
                 currentResults.InlineForest = f;
@@ -798,6 +800,20 @@ namespace PerformanceExplorer
             XmlSerializer xo = new XmlSerializer(typeof(InlineForest));
             Stream xmlOutFile = new FileStream(Path.Combine(resultsDir, b.ShortName + "-full-consolidated.xml"), FileMode.Create);
             xo.Serialize(xmlOutFile, fullForest);
+
+            // Now get full perf numbers -- just for the initial set
+            for (int i = 0; i < x.Iterations(); i++)
+            {
+                Configuration fullPerfConfig = new Configuration("full-perf-" + i);
+                fullPerfConfig.Environment["COMPlus_JitInlinePolicyFull"] = "1";
+                fullPerfConfig.Environment["COMPlus_JitInlineDepth"] = "10";
+                fullPerfConfig.Environment["COMPlus_JitInlineSize"] = "200";
+                fullPerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                Results perfResults = x.RunBenchmark(b, fullPerfConfig);
+                fullResults.Performance = perfResults.Performance;
+            }
+
+            fullResults.Performance.Print("full");
 
             return fullResults;
         }
