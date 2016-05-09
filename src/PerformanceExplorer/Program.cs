@@ -49,7 +49,7 @@ namespace PerformanceExplorer
         {
             foreach (string subBench in ExecutionTimes.Keys)
             {
-                Console.WriteLine("### {0} perf for {1} is {2:0.00} milliseconds",
+                Console.Write("### {0} perf for {1} is {2:0.00} milliseconds",
                     configName, subBench, ExecutionTimes[subBench]);
                 if (InstructionCount.ContainsKey(subBench))
                 {
@@ -355,12 +355,12 @@ namespace PerformanceExplorer
             {
                 IEnumerable<double> executionTimes =
                     from el in sub.Descendants("iteration")
-                    where (string)el.Attribute("index") != "0"
+                    where el.Attribute("Duration") != null && (string)el.Attribute("index") != "0"
                     select Double.Parse((string)el.Attribute("Duration"));
 
                 IEnumerable<double> instructionsRetired =
                     from el in sub.Descendants("iteration")
-                    where (string)el.Attribute("index") != "0"
+                    where el.Attribute("InstRetired") != null && (string)el.Attribute("index") != "0"
                     select Double.Parse((string)el.Attribute("InstRetired"));
 
                 if (instructionsRetired.Count() > 0)
