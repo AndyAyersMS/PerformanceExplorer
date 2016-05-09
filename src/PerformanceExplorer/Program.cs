@@ -39,9 +39,11 @@ namespace PerformanceExplorer
         public PerformanceData()
         {
             ExecutionTimes = new SortedDictionary<string, double>();
+            InstructionCount = new SortedDictionary<string, double>();
         }
 
         public SortedDictionary<string, double> ExecutionTimes;
+        public SortedDictionary<string, double> InstructionCount;
 
         public void Print(string configName)
         {
@@ -49,6 +51,11 @@ namespace PerformanceExplorer
             {
                 Console.WriteLine("### {0} perf for {1} is {2:0.00} milliseconds",
                     configName, subBench, ExecutionTimes[subBench]);
+                if (InstructionCount.ContainsKey(subBench))
+                {
+                    Console.Write(" {0} M instructions", InstructionCount[subBench] / (1000 * 1000));
+                }
+                Console.WriteLine();
             }
         }
     }
@@ -175,7 +182,7 @@ namespace PerformanceExplorer
             cmdExe = @"c:\windows\system32\cmd.exe";
             runnerExe = @"c:\repos\coreclr\bin\tests\windows_nt.x64.Release\tests\core_root\corerun.exe";
             verbose = true;
-            veryVerbose = false;
+            veryVerbose = true;
         }
 
         public override Results RunBenchmark(Benchmark b, Configuration c)
@@ -341,7 +348,8 @@ namespace PerformanceExplorer
             XElement root = XElement.Load(xmlPerfResultsFile);
             IEnumerable<XElement> subBenchmarks =
                 from el in root.Descendants("test") select el;
-            SortedDictionary<string, double> perfNumbers = new SortedDictionary<string, double>();
+            SortedDictionary<string, double> durations = new SortedDictionary<string, double>();
+            SortedDictionary<string, double> instructions = new SortedDictionary<string, double>();
 
             foreach (XElement sub in subBenchmarks)
             {
@@ -350,14 +358,33 @@ namespace PerformanceExplorer
                     where (string)el.Attribute("index") != "0"
                     select Double.Parse((string)el.Attribute("Duration"));
 
+                IEnumerable<double> instructionsRetired =
+                    from el in sub.Descendants("iteration")
+                    where (string)el.Attribute("index") != "0"
+                    select Double.Parse((string)el.Attribute("InstRetired"));
+
+                if (instructionsRetired.Count() > 0)
+                {
+                    double avg = instructionsRetired.Average();
+                    if (veryVerbose)
+                    {
+                        Console.WriteLine("Instructions for {0} was {1}", sub.Attribute("name"), avg);
+                    }
+                    instructions[(string)sub.Attribute("name")] = avg;
+                }
+                else
+                {
+                    Console.WriteLine("No perf data for {0} in {1} ?", sub.Attribute("name"), xmlPerfResultsFile);
+                }
+
                 if (executionTimes.Count() > 0)
                 {
                     double avg = executionTimes.Average();
                     if (veryVerbose)
                     {
-                        Console.WriteLine("Perf for {0} was {1}", sub.Attribute("name"), avg);
+                        Console.WriteLine("Duration for {0} was {1}", sub.Attribute("name"), avg);
                     }
-                    perfNumbers[(string)sub.Attribute("name")] = avg;
+                    durations[(string)sub.Attribute("name")] = avg;
                 }
                 else
                 {
@@ -369,7 +396,8 @@ namespace PerformanceExplorer
             results.Success = (b.ExitCode == runnerProcess.ExitCode);
             results.ExitCode = b.ExitCode;
             results.LogFile = "";
-            results.Performance.ExecutionTimes = perfNumbers;
+            results.Performance.ExecutionTimes = durations;
+            results.Performance.InstructionCount = instructions;
 
             return results;
         }
@@ -485,8 +513,18 @@ namespace PerformanceExplorer
                     double noinlineTime = noInlineResults.Performance.ExecutionTimes[subBench];
                     double improvement = noinlineTime - legacyTime;
                     string change = improvement > 0 ? "improvement" : "regression";
-                    Console.WriteLine("{0}: Legacy Policy perf {1}: {2:0.00} ({3:0.00}%)",
+                    Console.Write("{0}: Legacy Policy perf {1}: Time {2:0.00} ({3:0.00}%)",
                         subBench, change, improvement, improvement / noinlineTime * 100);
+                    if (legacyResults.Performance.InstructionCount.ContainsKey(subBench))
+                    {
+                        double legacyInstructions = legacyResults.Performance.InstructionCount[subBench];
+                        double noinlineInstructions = noInlineResults.Performance.InstructionCount[subBench];
+                        double improvement2 = noinlineInstructions - legacyInstructions;
+                        string change2 = improvement2 > 0 ? "improvement" : "regression";
+                        Console.Write(" Instructions {0}: {1} M ({2:0.00})%",
+                            change2, improvement2 / (1000 * 1000), improvement2 / noinlineInstructions * 100);
+                    }
+                    Console.WriteLine();
                 }
 
                 Results fullResults = p.BuildFullModel(r, x, b, noInlineResults);
