@@ -47,7 +47,7 @@ namespace PerformanceExplorer
         {
             foreach (string subBench in ExecutionTimes.Keys)
             {
-                Console.WriteLine("{0} perf for {1} is {2:0.00} milliseconds",
+                Console.WriteLine("### {0} perf for {1} is {2:0.00} milliseconds",
                     configName, subBench, ExecutionTimes[subBench]);
             }
         }
@@ -317,7 +317,7 @@ namespace PerformanceExplorer
             }
             runnerProcess.StartInfo.Environment["CORE_ROOT"] = sandboxDir;
             runnerProcess.StartInfo.Arguments = benchmarkFile + 
-                " -runner xunit.console.netcore.exe -runnerhost corerun.exe -runid " + perfName;
+                " -nologo -runner xunit.console.netcore.exe -runnerhost corerun.exe -runid " + perfName;
             runnerProcess.StartInfo.WorkingDirectory = sandboxDir;
             runnerProcess.StartInfo.UseShellExecute = false;
 
@@ -491,6 +491,20 @@ namespace PerformanceExplorer
 
                 Results fullResults = p.BuildFullModel(r, x, b, noInlineResults);
                 if (fullResults == null)
+                {
+                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                    continue;
+                }
+
+                Results modelResults = p.BuildModelModel(r, x, b);
+                if (modelResults == null)
+                {
+                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                    continue;
+                }
+
+                Results sizeResults = p.BuildSizeModel(r, x, b);
+                if (modelResults == null)
                 {
                     Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
                     continue;
@@ -816,6 +830,104 @@ namespace PerformanceExplorer
             fullResults.Performance.Print("full");
 
             return fullResults;
+        }
+
+        // The "model" model uses heuristics based on modelling actual
+        // observations
+        Results BuildModelModel(Runner r, Runner x, Benchmark b)
+        {
+            Console.WriteLine("----");
+            Console.WriteLine("---- Model Model for {0}", b.ShortName);
+
+            Configuration modelConfig = new Configuration("model");
+            modelConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+            modelConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
+            modelConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
+
+            Results results = r.RunBenchmark(b, modelConfig);
+
+            if (results == null || !results.Success)
+            {
+                Console.WriteLine("{0} run failed\n", modelConfig.Name);
+                return null;
+            }
+
+            XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
+            InlineForest f;
+            Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
+            f = (InlineForest)xml.Deserialize(xmlFile);
+            long inlineCount = f.Methods.Sum(m => m.InlineCount);
+            Console.WriteLine("*** {0} config has {1} methods, {2} inlines",
+                modelConfig.Name, f.Methods.Length, inlineCount);
+            results.InlineForest = f;
+
+            // Now get perf numbers
+            for (int i = 0; i < x.Iterations(); i++)
+            {
+                Configuration modelPerfConfig = new Configuration("model-perf-" + i);
+                modelPerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                modelPerfConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
+                Results perfResults = x.RunBenchmark(b, modelPerfConfig);
+                results.Performance = perfResults.Performance;
+            }
+
+            results.Performance.Print(modelConfig.Name);
+
+            return results;
+        }
+
+        // The size model tries not to increase method size
+        Results BuildSizeModel(Runner r, Runner x, Benchmark b)
+        {
+            Console.WriteLine("----");
+            Console.WriteLine("---- Size Model for {0}", b.ShortName);
+
+            Configuration sizeConfig = new Configuration("size");
+            sizeConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+            sizeConfig.Environment["COMPlus_JitInlinePolicySize"] = "1";
+            sizeConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
+
+            Results results = r.RunBenchmark(b, sizeConfig);
+
+            if (results == null || !results.Success)
+            {
+                Console.WriteLine("{0} run failed\n", sizeConfig.Name);
+                return null;
+            }
+
+            XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
+            InlineForest f;
+            Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
+            f = (InlineForest)xml.Deserialize(xmlFile);
+            long inlineCount = f.Methods.Sum(m => m.InlineCount);
+            Console.WriteLine("*** {0} config has {1} methods, {2} inlines", 
+                sizeConfig.Name, f.Methods.Length, inlineCount);
+            results.InlineForest = f;
+
+            // Now get perf numbers
+            for (int i = 0; i < x.Iterations(); i++)
+            {
+                Configuration sizePerfConfig = new Configuration("size-perf-" + i);
+                sizePerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                sizePerfConfig.Environment["COMPlus_JitInlinePolicySize"] = "1";
+                Results perfResults = x.RunBenchmark(b, sizePerfConfig);
+                results.Performance = perfResults.Performance;
+            }
+
+            results.Performance.Print(sizeConfig.Name);
+
+            return results;
+        }
+
+        // The random model is random
+        Results BuildRandomModel(Runner r, Runner x, Benchmark b, uint seed)
+        {
+            Console.WriteLine("----");
+            Console.WriteLine("---- Random Model {0} for {1}", seed, b.ShortName);
+
+            // Grr, requires DEBUG build. Punt for now.
+            return null;
+
         }
     }
 }
