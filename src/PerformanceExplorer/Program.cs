@@ -87,6 +87,12 @@ namespace PerformanceExplorer
     // A method seen either in jitting or inlining
     public class Method
     {
+        public Method()
+        {
+            Callers = new HashSet<Method>();
+            Callees = new HashSet<Method>();
+        }
+
         public MethodId getId()
         {
             MethodId id = new MethodId();
@@ -117,6 +123,88 @@ namespace PerformanceExplorer
         public void MarkAsDuplicate() { IsDuplicate = true; }
         public bool CheckIsDuplicate() { return IsDuplicate; }
         private bool IsDuplicate;
+
+        public HashSet<Method> Callers;
+        public HashSet<Method> Callees;
+    }
+
+    // THe jit-visible call graph
+    public class CallGraph
+    {
+        public CallGraph(Results fullResults)
+        {
+            Map = fullResults.Methods;
+            Nodes = new HashSet<Method>();
+            Roots = new HashSet<Method>();
+            Leaves = new HashSet<Method>();
+            Build();
+        }
+        public void Build()
+        {
+            // Populate per-method caller and callee lists
+            // Drive via IDs to consolidate dups
+            foreach(MethodId callerId in Map.Keys)
+            {
+                Method caller = Map[callerId];
+
+                foreach (Inline i in caller.Inlines)
+                {
+                    MethodId calleeId = i.GetMethodId();
+
+                    // Not sure why it wouldn't....
+                    if (Map.ContainsKey(calleeId))
+                    {
+                        Method callee = Map[calleeId];
+
+                        caller.Callees.Add(callee);
+                        callee.Callers.Add(caller);
+                    }         
+                }
+            }
+
+            foreach (MethodId methodId in Map.Keys)
+            {
+                Method method = Map[methodId];
+
+                Nodes.Add(method);
+
+                // Methods with no callers are roots.
+                if (method.Callers.Count == 0)
+                {
+                    Roots.Add(method);
+                }
+
+                // Methods with no callees are leaves.
+                if (method.Callees.Count == 0)
+                {
+                    Leaves.Add(method);
+                }
+            }
+        }
+
+        public Dictionary<MethodId, Method> Map;
+        public HashSet<Method> Nodes;
+        public HashSet<Method> Roots;
+        public HashSet<Method> Leaves;
+
+        public void DumpDot(string file)
+        {
+            using (StreamWriter outFile = File.CreateText(file))
+            {
+                outFile.WriteLine("digraph CallGraph {");
+                foreach (Method m in Nodes)
+                {
+                    outFile.WriteLine("\"{0:X8}-{1:X8}\";", m.Token, m.Hash);
+
+                    foreach (Method p in m.Callees)
+                    {
+                        outFile.WriteLine("\"{0:X8}-{1:X8}\" -> \"{2:X8}-{3:X8}\";",
+                            m.Token, m.Hash, p.Token, p.Hash);
+                    }
+                }
+                outFile.WriteLine("}");
+            }
+        }
     }
 
     // A node in an inline tree.
@@ -134,7 +222,16 @@ namespace PerformanceExplorer
         public Inline[] Inlines;
         public uint Token;
         public uint Offset;
+        public uint Hash;
         public string Reason;
+
+        public MethodId GetMethodId()
+        {
+            MethodId id = new MethodId();
+            id.Token = Token;
+            id.Hash = Hash;
+            return id;
+        }
     }
 
     // InlineForest describes the inline forest used for the run.
@@ -166,6 +263,7 @@ namespace PerformanceExplorer
         public InlineForest InlineForest;
         public Dictionary<MethodId, Method> Methods;
         public PerformanceData Performance;
+        public string Name;
     }
 
     // A mechanism to run the benchmark
@@ -226,6 +324,7 @@ namespace PerformanceExplorer
             results.Success = (b.ExitCode == runnerProcess.ExitCode);
             results.ExitCode = b.ExitCode;
             results.LogFile = stderrName;
+            results.Name = c.Name;
             results.Performance.ExecutionTimes[b.ShortName] = runnerProcess.ExitTime.Subtract(runnerProcess.StartTime).TotalMilliseconds;
             return results;
         }
@@ -396,6 +495,7 @@ namespace PerformanceExplorer
             results.Success = (b.ExitCode == runnerProcess.ExitCode);
             results.ExitCode = b.ExitCode;
             results.LogFile = "";
+            results.Name = c.Name;
             results.Performance.ExecutionTimes = durations;
             results.Performance.InstructionCount = instructions;
 
@@ -417,140 +517,6 @@ namespace PerformanceExplorer
 
     public class Program
     {
-        public static int Main(string[] args)
-        {
-            Program p = new Program();
-            Runner r = new CoreClrRunner();
-            Runner x = new XunitPerfRunner();
-
-            // Enumerate benchmarks that can be run
-            Dictionary<string, string> benchmarks = new Dictionary<string, string>();
-
-            string benchmarkRoot = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality";
-            DirectoryInfo benchmarkRootInfo = new DirectoryInfo(benchmarkRoot);
-            foreach (FileInfo f in benchmarkRootInfo.GetFiles("*.exe", SearchOption.AllDirectories))
-            {
-                benchmarks.Add(f.Name, f.FullName);
-            }
-
-            // If an arg is passed, run benchmarks that contain that arg as a substring.
-            // Otherwise run them all.
-            List<string> benchmarksToRun = new List<string>();
-
-            if (args.Length == 0)
-            {
-                benchmarksToRun.AddRange(benchmarks.Values);
-            }
-            else
-            {
-                Console.WriteLine("Scanning for benchmarks....");
-                foreach (string item in args)
-                {
-                    int beforeCount = benchmarksToRun.Count;
-                    foreach (string benchName in benchmarks.Keys)
-                    {
-                        if (benchmarks[benchName].IndexOf(item, StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            benchmarksToRun.Add(benchmarks[benchName]);
-                        }
-                    }
-
-                    if (benchmarksToRun.Count == 0)
-                    {
-                        Console.WriteLine("No benchmark matches {0}", item);
-                    }
-                    else
-                    {
-                        Console.WriteLine("{0} benchmarks matched '{1}'", 
-                                benchmarksToRun.Count - beforeCount, item);
-                    }
-                }
-            }
-
-            foreach (string s in benchmarksToRun)
-            {
-                Benchmark b = new Benchmark();
-                b.ShortName = Path.GetFileName(s);
-                b.FullPath = s;
-                b.ExitCode = 100;
-
-                Results noInlineResults = p.BuildNoInlineModel(r, x, b);
-                if (noInlineResults == null)
-                {
-                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
-                    continue;
-                }
-
-                Results legacyResults = p.BuildLegacyModel(r, x, b);
-                if (legacyResults == null)
-                {
-                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
-                    continue;
-                }
-
-                // See impact of LegacyPolicy inlines
-
-                int legacyCount = legacyResults.Performance.ExecutionTimes.Count;
-                int noInlineCount = noInlineResults.Performance.ExecutionTimes.Count;
-
-                if (legacyCount!= noInlineCount)
-                {
-                    Console.WriteLine("Odd, noinline had {0} parts, legacy has {1} parts. " +
-                        "Skipping remainder of work for this benchmark",
-                        noInlineCount, legacyCount);
-                    continue;
-                }
-
-                if (legacyCount == 0)
-                {
-                    Console.WriteLine("Odd, benchmark has no perf data. Skipping");
-                    continue;
-                }
-
-                foreach (string subBench in legacyResults.Performance.ExecutionTimes.Keys)
-                {
-                    double legacyTime = legacyResults.Performance.ExecutionTimes[subBench];
-                    double noinlineTime = noInlineResults.Performance.ExecutionTimes[subBench];
-                    double improvement = noinlineTime - legacyTime;
-                    string change = improvement > 0 ? "improvement" : "regression";
-                    Console.Write("{0}: Legacy Policy perf {1}: Time {2:0.00} ({3:0.00}%)",
-                        subBench, change, improvement, improvement / noinlineTime * 100);
-                    if (legacyResults.Performance.InstructionCount.ContainsKey(subBench))
-                    {
-                        double legacyInstructions = legacyResults.Performance.InstructionCount[subBench];
-                        double noinlineInstructions = noInlineResults.Performance.InstructionCount[subBench];
-                        double improvement2 = noinlineInstructions - legacyInstructions;
-                        string change2 = improvement2 > 0 ? "improvement" : "regression";
-                        Console.Write(" Instructions {0}: {1} M ({2:0.00})%",
-                            change2, improvement2 / (1000 * 1000), improvement2 / noinlineInstructions * 100);
-                    }
-                    Console.WriteLine();
-                }
-
-                Results fullResults = p.BuildFullModel(r, x, b, noInlineResults);
-                if (fullResults == null)
-                {
-                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
-                    continue;
-                }
-
-                Results modelResults = p.BuildModelModel(r, x, b);
-                if (modelResults == null)
-                {
-                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
-                    continue;
-                }
-
-                Results sizeResults = p.BuildSizeModel(r, x, b);
-                if (modelResults == null)
-                {
-                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
-                    continue;
-                }
-            }
-
-            return 100;
-        }
 
         // The noinline model is one where inlining is disabled.
         // The inline forest here is minimal.
@@ -839,6 +805,16 @@ namespace PerformanceExplorer
             // And consolidate into a results set
             Results fullResults = new Results();
             fullResults.InlineForest = fullForest;
+            fullResults.Name = "full";
+
+            // Populate the methodId -> method lookup table
+            Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(fullMethods.Count);
+            foreach (Method m in fullMethods)
+            {
+                MethodId id = m.getId();
+                methods[id] = m;
+            }
+            fullResults.Methods = methods;
 
             long fullInlineCount = fullForest.Methods.Sum(m => m.InlineCount);
             uint nonLeafMethodCount = (uint) fullMethods.Count - leafMethodCount;
@@ -966,6 +942,162 @@ namespace PerformanceExplorer
             // Grr, requires DEBUG build. Punt for now.
             return null;
 
+        }
+
+        public static int Main(string[] args)
+        {
+            Program p = new Program();
+            Runner r = new CoreClrRunner();
+            Runner x = new XunitPerfRunner();
+
+            // Enumerate benchmarks that can be run
+            Dictionary<string, string> benchmarks = new Dictionary<string, string>();
+
+            string benchmarkRoot = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality";
+            DirectoryInfo benchmarkRootInfo = new DirectoryInfo(benchmarkRoot);
+            foreach (FileInfo f in benchmarkRootInfo.GetFiles("*.exe", SearchOption.AllDirectories))
+            {
+                benchmarks.Add(f.Name, f.FullName);
+            }
+
+            // If an arg is passed, run benchmarks that contain that arg as a substring.
+            // Otherwise run them all.
+            List<string> benchmarksToRun = new List<string>();
+
+            if (args.Length == 0)
+            {
+                benchmarksToRun.AddRange(benchmarks.Values);
+            }
+            else
+            {
+                Console.WriteLine("Scanning for benchmarks....");
+                foreach (string item in args)
+                {
+                    int beforeCount = benchmarksToRun.Count;
+                    foreach (string benchName in benchmarks.Keys)
+                    {
+                        if (benchmarks[benchName].IndexOf(item, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            benchmarksToRun.Add(benchmarks[benchName]);
+                        }
+                    }
+
+                    if (benchmarksToRun.Count == 0)
+                    {
+                        Console.WriteLine("No benchmark matches {0}", item);
+                    }
+                    else
+                    {
+                        Console.WriteLine("{0} benchmarks matched '{1}'",
+                                benchmarksToRun.Count - beforeCount, item);
+                    }
+                }
+            }
+
+            foreach (string s in benchmarksToRun)
+            {
+                Benchmark b = new Benchmark();
+                b.ShortName = Path.GetFileName(s);
+                b.FullPath = s;
+                b.ExitCode = 100;
+
+                Results noInlineResults = p.BuildNoInlineModel(r, x, b);
+                if (noInlineResults == null)
+                {
+                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                    continue;
+                }
+
+                Results legacyResults = p.BuildLegacyModel(r, x, b);
+                if (legacyResults == null)
+                {
+                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                    continue;
+                }
+
+                // See impact of LegacyPolicy inlines
+
+                int legacyCount = legacyResults.Performance.ExecutionTimes.Count;
+                int noInlineCount = noInlineResults.Performance.ExecutionTimes.Count;
+
+                if (legacyCount != noInlineCount)
+                {
+                    Console.WriteLine("Odd, noinline had {0} parts, legacy has {1} parts. " +
+                        "Skipping remainder of work for this benchmark",
+                        noInlineCount, legacyCount);
+                    continue;
+                }
+
+                if (legacyCount == 0)
+                {
+                    Console.WriteLine("Odd, benchmark has no perf data. Skipping");
+                    continue;
+                }
+
+                Results fullResults = p.BuildFullModel(r, x, b, noInlineResults);
+                if (fullResults == null)
+                {
+                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                    continue;
+                }
+
+                CallGraph g = new CallGraph(fullResults);
+                g.DumpDot(@"c:\repos\PerformanceExplorer\results\" + b.ShortName + "-callgraph.dot");
+
+                Results modelResults = p.BuildModelModel(r, x, b);
+                if (modelResults == null)
+                {
+                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                    continue;
+                }
+
+                Results sizeResults = p.BuildSizeModel(r, x, b);
+                if (modelResults == null)
+                {
+                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                    continue;
+                }
+
+                Results[] allResults = new Results[] { legacyResults, noInlineResults, modelResults, sizeResults, fullResults };
+                p.ComparePerf(allResults);
+            }
+
+            return 100;
+        }
+
+        void ComparePerf(Results[] results)
+        {
+            Results baseline = results[0];
+            Console.WriteLine("---- Perf Results----");
+            Console.Write("{0,-12}", "Test");
+            foreach (Results r in results)
+            {
+                Console.Write(" {0,8}.T {0,8}.I", r.Name);
+            }
+            Console.WriteLine();
+
+            foreach (string subBench in baseline.Performance.ExecutionTimes.Keys)
+            {
+                Console.Write("{0,-12}", subBench);
+
+                //double baselineTime = baseline.Performance.ExecutionTimes[subBench];
+                //double baselineInstructions = 0;
+                //bool hasInstructions = baseline.Performance.InstructionCount.ContainsKey(subBench);
+                //if (hasInstructions)
+                //{
+                //    baselineInstructions = baseline.Performance.InstructionCount[subBench];
+                //}
+
+                foreach (Results diff in results)
+                {
+                    double diffTime = diff.Performance.ExecutionTimes[subBench];
+                    Console.Write(" {0,10:0.00}", diffTime);
+                    double diffInst = diff.Performance.InstructionCount[subBench];
+                    Console.Write(" {0,10:0.00}", diffInst / (1000 * 1000));
+                }
+
+                Console.WriteLine();
+            }
         }
     }
 }
