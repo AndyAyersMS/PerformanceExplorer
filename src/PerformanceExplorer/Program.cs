@@ -38,25 +38,72 @@ namespace PerformanceExplorer
     {
         public PerformanceData()
         {
-            ExecutionTimes = new SortedDictionary<string, double>();
-            InstructionCount = new SortedDictionary<string, double>();
+            ExecutionTime = new SortedDictionary<string, List<double>>();
+            InstructionCount = new SortedDictionary<string, List<double>>();
         }
 
-        public SortedDictionary<string, double> ExecutionTimes;
-        public SortedDictionary<string, double> InstructionCount;
+        // subPart -> list of data
+        public SortedDictionary<string, List<double>> ExecutionTime;
+        public SortedDictionary<string, List<double>> InstructionCount;
 
         public void Print(string configName)
         {
-            foreach (string subBench in ExecutionTimes.Keys)
+            foreach (string subBench in ExecutionTime.Keys)
             {
-                Console.Write("### {0} perf for {1} is {2:0.00} milliseconds",
-                    configName, subBench, ExecutionTimes[subBench]);
-                if (InstructionCount.ContainsKey(subBench))
-                {
-                    Console.Write(" {0} M instructions", InstructionCount[subBench] / (1000 * 1000));
-                }
-                Console.WriteLine();
+                Summarize(subBench, configName);
             }
+        }
+
+        public void Summarize(string subBench, string configName)
+        {
+            Console.Write("### {0} perf for {1}", configName, subBench);
+
+            if (ExecutionTime.ContainsKey(subBench))
+            {
+                Console.Write(" time {0:0.00} milliseconds (~{1:0.00}%)",
+                    Average(ExecutionTime[subBench]), 
+                    PercentDeviation(ExecutionTime[subBench]));
+            }
+
+            if (InstructionCount.ContainsKey(subBench))
+            {
+                Console.Write(" instructions {0:0.00} million (~{1:0.00}%)",
+                    Average(InstructionCount[subBench]) / (1000 * 1000), 
+                    PercentDeviation(InstructionCount[subBench]));
+            }
+
+            Console.WriteLine();
+        }
+
+        public static double Average(List<double> data)
+        {
+            if (data.Count() < 1)
+            {
+                return -1;
+            }
+
+            return data.Average();
+        }
+
+        public static double StdDeviation(List<double> data)
+        {
+            if (data.Count() < 2)
+            {
+                return 0;
+            }
+
+            double avg = Average(data);
+            double sqError = 0;
+            foreach (double d in data)
+            {
+                sqError += (avg - d) * (avg - d);
+            }
+            double estSD = Math.Sqrt(sqError / (data.Count() - 1));
+            return estSD;
+        }
+        public static double PercentDeviation(List<double> data)
+        {
+            return 100.0 * StdDeviation(data) / Average(data);
         }
     }
 
@@ -246,7 +293,6 @@ namespace PerformanceExplorer
         public string ShortName;
         public string FullPath;
         public int ExitCode;
-        public int SubBenchmarkCount;
     }
 
     // The results of running a benchmark
@@ -325,7 +371,11 @@ namespace PerformanceExplorer
             results.ExitCode = b.ExitCode;
             results.LogFile = stderrName;
             results.Name = c.Name;
-            results.Performance.ExecutionTimes[b.ShortName] = runnerProcess.ExitTime.Subtract(runnerProcess.StartTime).TotalMilliseconds;
+
+            // TODO: Iterate to get perf data
+            List<double> timeData = new List<double>(1);
+            timeData.Add(runnerProcess.ExitTime.Subtract(runnerProcess.StartTime).TotalMilliseconds);
+            results.Performance.ExecutionTime[b.ShortName] = timeData;
             return results;
         }
 
@@ -442,74 +492,41 @@ namespace PerformanceExplorer
             }
 
             // Parse iterations out of perf-*.xml
-            // Note: will need something smarter for multiple benchmarks in a binary.
             string xmlPerfResultsFile = Path.Combine(sandboxDir, perfName) + ".xml";
             XElement root = XElement.Load(xmlPerfResultsFile);
-            IEnumerable<XElement> subBenchmarks =
-                from el in root.Descendants("test") select el;
-            SortedDictionary<string, double> durations = new SortedDictionary<string, double>();
-            SortedDictionary<string, double> instructions = new SortedDictionary<string, double>();
+            IEnumerable<XElement> subBenchmarks = from el in root.Descendants("test") select el;
+
+            // We keep the raw iterations results and just summarize here.
+            Results results = new Results();
+            PerformanceData perfData = results.Performance;
 
             foreach (XElement sub in subBenchmarks)
             {
-                IEnumerable<double> executionTimes =
+                string subName = (string)sub.Attribute("name");
+
+                IEnumerable<double> iExecutionTimes =
                     from el in sub.Descendants("iteration")
                     where el.Attribute("Duration") != null && (string)el.Attribute("index") != "0"
                     select Double.Parse((string)el.Attribute("Duration"));
 
-                IEnumerable<double> instructionsRetired =
+                IEnumerable<double> iInstructionsRetired =
                     from el in sub.Descendants("iteration")
                     where el.Attribute("InstRetired") != null && (string)el.Attribute("index") != "0"
                     select Double.Parse((string)el.Attribute("InstRetired"));
 
-                if (instructionsRetired.Count() > 0)
-                {
-                    double avg = instructionsRetired.Average();
-                    double sqError = 0;
-                    foreach (double d in instructionsRetired)
-                    {
-                        sqError += (avg - d) * (avg - d);
-                    }
-                    double estSD = Math.Sqrt(sqError / (instructionsRetired.Count() - 1));
-                    if (verbose)
-                    {
-                        Console.WriteLine("Instructions for {0} was {1:0.00} +/- {2:0.00}%", sub.Attribute("name"), avg, 100 * estSD/avg);
-                    }
-                    instructions[(string)sub.Attribute("name")] = avg;
-                }
-                else
-                {
-                    Console.WriteLine("No perf data for {0} in {1} ?", sub.Attribute("name"), xmlPerfResultsFile);
-                }
+                perfData.ExecutionTime[subName] = new List<double>(iExecutionTimes);
+                perfData.InstructionCount[subName] = new List<double>(iInstructionsRetired);
 
-                if (executionTimes.Count() > 0)
+                if (verbose)
                 {
-                    double avg = executionTimes.Average();
-                    double sqError = 0;
-                    foreach (double d in executionTimes)
-                    {
-                        sqError += (avg - d) * (avg - d);
-                    }
-                    double estSD = Math.Sqrt(sqError / (executionTimes.Count() - 1));
-                    if (verbose)
-                    {
-                        Console.WriteLine("Duration for {0} was {1:0.00} +/- {2:0.00}%", sub.Attribute("name"), avg, 100 * estSD / avg);
-                    }
-                    durations[(string)sub.Attribute("name")] = avg;
-                }
-                else
-                {
-                    Console.WriteLine("No perf data for {0} in {1} ?", sub.Attribute("name"), xmlPerfResultsFile);
+                    perfData.Summarize(subName, c.Name);
                 }
             }
 
-            Results results = new Results();
             results.Success = (b.ExitCode == runnerProcess.ExitCode);
             results.ExitCode = b.ExitCode;
             results.LogFile = "";
             results.Name = c.Name;
-            results.Performance.ExecutionTimes = durations;
-            results.Performance.InstructionCount = instructions;
 
             return results;
         }
@@ -1029,8 +1046,8 @@ namespace PerformanceExplorer
 
                 // See impact of LegacyPolicy inlines
 
-                int legacyCount = legacyResults.Performance.ExecutionTimes.Count;
-                int noInlineCount = noInlineResults.Performance.ExecutionTimes.Count;
+                int legacyCount = legacyResults.Performance.ExecutionTime.Count;
+                int noInlineCount = noInlineResults.Performance.ExecutionTime.Count;
 
                 if (legacyCount != noInlineCount)
                 {
@@ -1088,23 +1105,15 @@ namespace PerformanceExplorer
             }
             Console.WriteLine();
 
-            foreach (string subBench in baseline.Performance.ExecutionTimes.Keys)
+            foreach (string subBench in baseline.Performance.ExecutionTime.Keys)
             {
                 Console.Write("{0,-12}", subBench);
 
-                //double baselineTime = baseline.Performance.ExecutionTimes[subBench];
-                //double baselineInstructions = 0;
-                //bool hasInstructions = baseline.Performance.InstructionCount.ContainsKey(subBench);
-                //if (hasInstructions)
-                //{
-                //    baselineInstructions = baseline.Performance.InstructionCount[subBench];
-                //}
-
                 foreach (Results diff in results)
                 {
-                    double diffTime = diff.Performance.ExecutionTimes[subBench];
+                    double diffTime = PerformanceData.Average(diff.Performance.ExecutionTime[subBench]);
                     Console.Write(" {0,10:0.00}", diffTime);
-                    double diffInst = diff.Performance.InstructionCount[subBench];
+                    double diffInst = PerformanceData.Average(diff.Performance.InstructionCount[subBench]);
                     Console.Write(" {0,10:0.00}", diffInst / (1000 * 1000));
                 }
 
