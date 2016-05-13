@@ -465,9 +465,15 @@ namespace PerformanceExplorer
                 if (instructionsRetired.Count() > 0)
                 {
                     double avg = instructionsRetired.Average();
-                    if (veryVerbose)
+                    double sqError = 0;
+                    foreach (double d in instructionsRetired)
                     {
-                        Console.WriteLine("Instructions for {0} was {1}", sub.Attribute("name"), avg);
+                        sqError += (avg - d) * (avg - d);
+                    }
+                    double estSD = Math.Sqrt(sqError / (instructionsRetired.Count() - 1));
+                    if (verbose)
+                    {
+                        Console.WriteLine("Instructions for {0} was {1:0.00} +/- {2:0.00}%", sub.Attribute("name"), avg, 100 * estSD/avg);
                     }
                     instructions[(string)sub.Attribute("name")] = avg;
                 }
@@ -479,9 +485,15 @@ namespace PerformanceExplorer
                 if (executionTimes.Count() > 0)
                 {
                     double avg = executionTimes.Average();
-                    if (veryVerbose)
+                    double sqError = 0;
+                    foreach (double d in executionTimes)
                     {
-                        Console.WriteLine("Duration for {0} was {1}", sub.Attribute("name"), avg);
+                        sqError += (avg - d) * (avg - d);
+                    }
+                    double estSD = Math.Sqrt(sqError / (executionTimes.Count() - 1));
+                    if (verbose)
+                    {
+                        Console.WriteLine("Duration for {0} was {1:0.00} +/- {2:0.00}%", sub.Attribute("name"), avg, 100 * estSD / avg);
                     }
                     durations[(string)sub.Attribute("name")] = avg;
                 }
