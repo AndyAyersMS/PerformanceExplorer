@@ -105,6 +105,83 @@ namespace PerformanceExplorer
         {
             return 100.0 * StdDeviation(data) / Average(data);
         }
+
+        // Use bootstrap to test hypothesis that difference in
+        // means of the two data sets is significant at indicated level.
+        // Return value is p value between 0 and 1.
+        public static double Confidence(List<double> data1, List<double> data2)
+        {
+            int kb = data1.Count();
+            int kd = data2.Count();
+
+            double d1ave = Average(data1);
+            double d2ave = Average(data2);
+            double basestat = Math.Abs(d1ave - d2ave);
+
+            // perform a boostrap test to estimate the one-sided 
+            // confidence that this diff could be significant.
+
+            List<double> mergedData = new List<double>(kb + kd);
+            mergedData.AddRange(data1);
+            mergedData.AddRange(data2);
+
+            double confidence = Bootstrap(basestat, kb, kd, mergedData);
+
+            return confidence;
+        }
+
+        // Use bootstrap to produce a p value for the hypothesis that the 
+        // difference shown in basestat is significant. 
+        // k1 and k2 are the sizes of the two sample populations
+        // data is the combined set of observations.
+        static double Bootstrap(double basestat, int k1, int k2, List<double> data)
+        {
+            double obs = 0;
+            Random r = new Random(RandomSeed);
+
+            for (int i = 0; i < NumberOfBootstrapTrials; i++)
+            {
+                List<double> z1 = Sample(data, k1, r);
+                List<double> z2 = Sample(data, k2, r);
+
+                double z1average = Average(z1);
+                double z2average = Average(z2);
+
+                double zmedian = Math.Abs(z1average - z2average);
+
+                if (zmedian < basestat)
+                {
+                    obs++;
+                }
+            }
+
+            return obs / NumberOfBootstrapTrials;
+        }
+
+        // Return a random sample (with replacement) of size n from the array data
+        static List<double> Sample(List<double> data, int n, Random r)
+        {
+            int l = data.Count;
+            List<double> x = new List<double>(n);
+            for (int i = 0; i < n; i++)
+            {
+                int j = r.Next(0, l);
+                x.Add(data[j]);
+            }
+
+            return x;
+        }
+
+        // Use fixed random seed so that we don't see the bootstrap p-values
+        // wander from invocation to invocation.
+        const int RandomSeed = 77;
+
+        // The bootstrap test works by taking a number of random samples
+        // and computing how frequently the samples exhibit the same 
+        // statistic as observed statstic. N determines the 
+        // number of bootstrap trials to run. A higher value is better
+        // but takes longer.
+        const int NumberOfBootstrapTrials = 1000;
     }
 
     // Information that identifies a method
@@ -1089,6 +1166,7 @@ namespace PerformanceExplorer
 
                 Results[] allResults = new Results[] { legacyResults, noInlineResults, modelResults, sizeResults, fullResults };
                 p.ComparePerf(allResults);
+                p.ExplorePerf(allResults);
             }
 
             return 100;
@@ -1118,6 +1196,62 @@ namespace PerformanceExplorer
                 }
 
                 Console.WriteLine();
+            }
+        }
+
+        void ExplorePerf(Results[] results)
+        {
+            Results baseline = results[0];
+
+            // See if any of the results are both significanly different than noinline
+            // and measured with high confidence.
+            foreach (string subBench in baseline.Performance.InstructionCount.Keys)
+            {
+                List<double> baseData = baseline.Performance.InstructionCount[subBench];
+                double baseAvg = PerformanceData.Average(baseData);
+                bool shown = false;
+
+                foreach (Results diff in results)
+                {
+                    if (diff == baseline)
+                    {
+                        continue;
+                    }
+
+                    List<double> diffData = diff.Performance.InstructionCount[subBench];
+                    double diffAvg = PerformanceData.Average(diffData);
+                    double confidence = PerformanceData.Confidence(baseData, diffData);
+                    double avgDiff = baseAvg - diffAvg;
+                    double pctDiff = 100 * avgDiff / baseAvg;
+                    double interestingDiff = 1;
+                    double confidentDiff = 0.9;
+                    bool interesting = Math.Abs(pctDiff) > interestingDiff;
+                    bool confident = confidence > confidentDiff;
+                    string interestVerb = interesting ? "is" : "is not";
+                    string confidentVerb = confident ? "and is" : "and is not";
+                    bool show = interesting && confident;
+
+                    if (!show)
+                    {
+                        continue;
+                    }
+
+                    shown = true;
+
+                    Console.WriteLine(
+                        "** {0} diff {1} in instructions between {2} ({3}) and {4} ({5}) "
+                        + "{6} interesting {7:0.00}% {8} significant p={9:0.00}",
+                        subBench, avgDiff / (1000 * 1000),
+                        baseline.Name, baseAvg / (1000 * 1000),
+                        diff.Name, diffAvg / (1000 * 1000),
+                        interestVerb, pctDiff,
+                        confidentVerb, confidence);
+                }
+
+                if (!shown)
+                {
+                    Console.WriteLine("** {0} no result diffs were both significant and confident", subBench);
+                }
             }
         }
     }
