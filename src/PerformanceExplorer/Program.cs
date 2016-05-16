@@ -268,12 +268,14 @@ namespace PerformanceExplorer
             Method r = new Method();
             r.Token = Token;
             r.Hash = Hash;
+            r.Name = Name;
             r.Inlines = new Inline[0];
             return r;
         }
 
         public uint Token;
         public uint Hash;
+        public string Name;
         public uint InlineCount;
         public uint HotSize;
         public uint ColdSize;
@@ -380,11 +382,12 @@ namespace PerformanceExplorer
             }
             return result;
         }
-        public Inline[] Inlines;
+
         public uint Token;
-        public uint Offset;
         public uint Hash;
+        public uint Offset;
         public string Reason;
+        public Inline[] Inlines;
 
         public Inline ShallowCopy()
         {
@@ -538,9 +541,9 @@ namespace PerformanceExplorer
                         Configuration c = new Configuration(testName);
                         c.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
                         c.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
-                        // c.Environment["COMPlus_JitInlineDumpXml"] = "1";
+                        c.Environment["COMPlus_JitInlineDumpXml"] = "1";
                         Results xr = x.RunBenchmark(benchmark, c);
-                        xr.Performance.Summarize(benchmark.ShortName, c.Name);
+                        xr.Performance.Print(c.Name);
                         explorationResults[k] = xr;
                     }
                 }
