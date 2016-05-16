@@ -235,6 +235,43 @@ namespace PerformanceExplorer
             return result;
         }
 
+        public void Dump()
+        {
+            Console.WriteLine("Inlines into {0:X8}", Token);
+            foreach (Inline x in Inlines)
+            {
+                x.Dump(2);
+            }
+        }
+
+        public Inline[] GetBfsSubtree(int k)
+        {
+            // Copy the inline tree up to K nodes total
+            int topLevelCount = Inlines.Length;
+
+            if (k <= topLevelCount)
+            {
+                Inline[] result = new Inline[k];
+                for (int i = 0; i < k; i++)
+                {
+                    result[i] = Inlines[i].ShallowCopy();
+                }
+
+                return result;
+            }
+
+            return null;
+        }
+
+        public Method ShallowCopy()
+        {
+            Method r = new Method();
+            r.Token = Token;
+            r.Hash = Hash;
+            r.Inlines = new Inline[0];
+            return r;
+        }
+
         public uint Token;
         public uint Hash;
         public uint InlineCount;
@@ -349,12 +386,32 @@ namespace PerformanceExplorer
         public uint Hash;
         public string Reason;
 
+        public Inline ShallowCopy()
+        {
+            Inline x = new Inline();
+            x.Token = Token;
+            x.Offset = Offset;
+            x.Hash = Hash;
+            x.Reason = Reason;
+            x.Inlines = new Inline[0];
+            return x;
+        }
+
         public MethodId GetMethodId()
         {
             MethodId id = new MethodId();
             id.Token = Token;
             id.Hash = Hash;
             return id;
+        }
+        public void Dump(int indent)
+        {
+            for (int i = 0; i < indent; i++) Console.Write(" ");
+            Console.WriteLine("{0:X8} {1}", Token, Reason);
+            foreach (Inline x in Inlines)
+            {
+                x.Dump(indent + 2);
+            }
         }
     }
 
@@ -387,6 +444,108 @@ namespace PerformanceExplorer
         public Dictionary<MethodId, Method> Methods;
         public PerformanceData Performance;
         public string Name;
+    }
+
+    public class Exploration
+    {
+        public Results baseResults;
+        public Results endResults;
+        public Benchmark benchmark;
+
+        public void Explore()
+        {
+            Console.WriteLine("$$$ Exploring perf diff between {0} and {1}", baseResults.Name, endResults.Name);
+
+            // Look at methods in end results with inlines.
+            foreach (Method m in endResults.Methods.Values)
+            {
+                int endCount = (int) m.InlineCount;
+                if (endCount > 0)
+                {
+                    // Noinline perf is already "known" from the baseline, so exclude that here.
+                    //
+                    // The maximal subtree perf may not be the end perf because the latter allows inlines
+                    // in all methods, and we're just expanding one method at a time here.
+                    Console.WriteLine("$$$ examining method {0:X8} with {1} inlines and {2} permutations via BFS.",
+                        m.Token, endCount, m.NumSubtrees() - 1);
+                    m.Dump();
+
+                    // Now for the actual experiment. We're going to grow the method's inline tree from the
+                    // baseline tree (which is noinline) to the end result tree. For sufficiently large trees
+                    // there are lots of intermediate subtrees. For now we just do a simple breadth-first linear
+                    // exploration, as follows.
+                    Results[] explorationResults = new Results[endCount + 1];
+                    explorationResults[0] = baseResults;
+
+                    // Make a copy of the baseline inline forest.
+                    int methodCount = baseResults.InlineForest.Methods.Length;
+                    InlineForest kForest = new InlineForest();
+                    kForest.Methods = new Method[methodCount];
+                    for (int kk = 0; kk < methodCount; kk++)
+                    {
+                        kForest.Methods[kk] = baseResults.InlineForest.Methods[kk].ShallowCopy();
+                    }
+
+                    // Find this method's index in the base forest.
+                    int index = 0;
+                    bool found = false;
+                    foreach (Method baseMethod in baseResults.InlineForest.Methods)
+                    {
+                        if (m.getId().Equals(baseMethod.getId()))
+                        {
+                            found = true;
+                            break;
+                        }
+
+                        index++;
+                    }
+
+                    if (!found)
+                    {
+                        Console.WriteLine("$$$ Can't find method in base method list, sorry");
+                        continue;
+                    }
+
+                    for (int k = 1; k <= endCount; k++)
+                    {
+                        // Build inline subtree for method with first K nodes and swap it into the tree.
+                        Inline[] mkInlines = m.GetBfsSubtree(k);
+
+                        if (mkInlines == null)
+                        {
+                            // Only top level working for now
+                            Console.WriteLine("$$$ Can't get this subtree yet, sorry");
+                            continue;
+                        }
+
+                        kForest.Methods[index].Inlines = mkInlines;
+                        kForest.Methods[index].InlineCount = (uint) k;
+
+                        // Externalize the inline xml
+                        XmlSerializer xo = new XmlSerializer(typeof(InlineForest));
+                        string testName = String.Format("{0}-{1}-{2:X8}-{3}", benchmark.ShortName, endResults.Name, m.Token, k);
+                        string xmlName = testName + ".xml";
+                        string resultsDir = @"c:\repos\PerformanceExplorer\results";
+                        string replayFileName = Path.Combine(resultsDir, xmlName);
+                        using (Stream xmlOutFile = new FileStream(replayFileName, FileMode.Create))
+                        {
+                            xo.Serialize(xmlOutFile, kForest);
+                        }
+                        Console.WriteLine("$$$ wrote inline xml to {0}", xmlName);
+
+                        // Run the test and record the results.
+                        XunitPerfRunner x = new XunitPerfRunner();
+                        Configuration c = new Configuration(testName);
+                        c.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
+                        c.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
+                        // c.Environment["COMPlus_JitInlineDumpXml"] = "1";
+                        Results xr = x.RunBenchmark(benchmark, c);
+                        xr.Performance.Summarize(benchmark.ShortName, c.Name);
+                        explorationResults[k] = xr;
+                    }
+                }
+            }
+        }
     }
 
     // A mechanism to run the benchmark
@@ -563,9 +722,10 @@ namespace PerformanceExplorer
             runnerProcess.WaitForExit();
 
             if (verbose)
-            {
-                Console.WriteLine("xUnitPerf: Finished running {0} -- configuration: {1}, exit code: {2} (expected {3})",
-                    b.ShortName, c.Name, runnerProcess.ExitCode, b.ExitCode);
+            {   
+                // Xunit doesn't run Main so no 100 exit here.
+                Console.WriteLine("xUnitPerf: Finished running {0} -- configuration: {1}, exit code: {2}",
+                    b.ShortName, c.Name, runnerProcess.ExitCode);
             }
 
             // Parse iterations out of perf-*.xml
@@ -739,9 +899,9 @@ namespace PerformanceExplorer
             legacyConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
             legacyConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
-            Results results = r.RunBenchmark(b, legacyConfig);
+            Results legacyResults = r.RunBenchmark(b, legacyConfig);
 
-            if (results == null || !results.Success)
+            if (legacyResults == null || !legacyResults.Success)
             {
                 Console.WriteLine("Legacy run failed\n");
                 return null;
@@ -749,11 +909,20 @@ namespace PerformanceExplorer
 
             XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
             InlineForest f;
-            Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
+            Stream xmlFile = new FileStream(legacyResults.LogFile, FileMode.Open);
             f = (InlineForest) xml.Deserialize(xmlFile);
             long inlineCount = f.Methods.Sum(m => m.InlineCount);
             Console.WriteLine("*** Legacy config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
-            results.InlineForest = f;
+            legacyResults.InlineForest = f;
+
+            // Populate the methodId -> method lookup table
+            Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
+            foreach (Method m in f.Methods)
+            {
+                MethodId id = m.getId();
+                methods[id] = m;
+            }
+            legacyResults.Methods = methods;
 
             // Now get legacy perf numbers
             for (int i = 0; i < x.Iterations(); i++)
@@ -761,12 +930,12 @@ namespace PerformanceExplorer
                 Configuration legacyPerfConfig = new Configuration("legacy-perf-" + i);
                 legacyPerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
                 Results perfResults = x.RunBenchmark(b, legacyPerfConfig);
-                results.Performance = perfResults.Performance;
+                legacyResults.Performance = perfResults.Performance;
             }
 
-            results.Performance.Print(legacyConfig.Name);
+            legacyResults.Performance.Print(legacyConfig.Name);
 
-            return results;
+            return legacyResults;
         }
 
         // The full model creates an inline forest at some prescribed
@@ -1055,6 +1224,9 @@ namespace PerformanceExplorer
             Program p = new Program();
             Runner r = new CoreClrRunner();
             Runner x = new XunitPerfRunner();
+            bool buildFullModel = false;
+            bool buildModelModel = false;
+            bool buildSizeModel = false;
 
             // Enumerate benchmarks that can be run
             Dictionary<string, string> benchmarks = new Dictionary<string, string>();
@@ -1102,6 +1274,7 @@ namespace PerformanceExplorer
 
             foreach (string s in benchmarksToRun)
             {
+                List<Results> allResults = new List<Results>();
                 Benchmark b = new Benchmark();
                 b.ShortName = Path.GetFileName(s);
                 b.FullPath = s;
@@ -1113,6 +1286,7 @@ namespace PerformanceExplorer
                     Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
                     continue;
                 }
+                allResults.Add(noInlineResults);
 
                 Results legacyResults = p.BuildLegacyModel(r, x, b);
                 if (legacyResults == null)
@@ -1120,6 +1294,7 @@ namespace PerformanceExplorer
                     Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
                     continue;
                 }
+                allResults.Add(legacyResults);
 
                 // See impact of LegacyPolicy inlines
 
@@ -1140,41 +1315,59 @@ namespace PerformanceExplorer
                     continue;
                 }
 
-                Results fullResults = p.BuildFullModel(r, x, b, noInlineResults);
-                if (fullResults == null)
+                if (buildFullModel)
                 {
-                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
-                    continue;
+                    Results fullResults = p.BuildFullModel(r, x, b, noInlineResults);
+                    if (fullResults == null)
+                    {
+                        Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                        continue;
+                    }
+
+                    allResults.Add(fullResults);
+
+                    CallGraph g = new CallGraph(fullResults);
+                    g.DumpDot(@"c:\repos\PerformanceExplorer\results\" + b.ShortName + "-callgraph.dot");
                 }
 
-                CallGraph g = new CallGraph(fullResults);
-                g.DumpDot(@"c:\repos\PerformanceExplorer\results\" + b.ShortName + "-callgraph.dot");
-
-                Results modelResults = p.BuildModelModel(r, x, b);
-                if (modelResults == null)
+                if (buildModelModel)
                 {
-                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
-                    continue;
+                    Results modelResults = p.BuildModelModel(r, x, b);
+                    if (modelResults == null)
+                    {
+                        Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                        continue;
+                    }
+                    allResults.Add(modelResults);
                 }
 
-                Results sizeResults = p.BuildSizeModel(r, x, b);
-                if (modelResults == null)
+                if (buildSizeModel)
                 {
-                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
-                    continue;
+                    Results sizeResults = p.BuildSizeModel(r, x, b);
+                    if (sizeResults == null)
+                    {
+                        Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                        continue;
+                    }
+                    allResults.Add(sizeResults);
                 }
 
-                Results[] allResults = new Results[] { legacyResults, noInlineResults, modelResults, sizeResults, fullResults };
                 p.ComparePerf(allResults);
-                p.ExplorePerf(allResults);
+                var thingsToExplore = p.ExaminePerf(b, allResults);
+
+                foreach(Exploration e in thingsToExplore)
+                {
+                    e.Explore();
+                    break;
+                }
             }
 
             return 100;
         }
 
-        void ComparePerf(Results[] results)
+        void ComparePerf(List<Results> results)
         {
-            Results baseline = results[0];
+            Results baseline = results.First();
             Console.WriteLine("---- Perf Results----");
             Console.Write("{0,-12}", "Test");
             foreach (Results r in results)
@@ -1199,11 +1392,13 @@ namespace PerformanceExplorer
             }
         }
 
-        void ExplorePerf(Results[] results)
+        List<Exploration> ExaminePerf(Benchmark b, List<Results> results)
         {
-            Results baseline = results[0];
+            Results baseline = results.First();
+            Console.WriteLine("---- Perf Examination----");
+            List<Exploration> interestingResults = new List<Exploration>();
 
-            // See if any of the results are both significanly different than noinline
+            // See if any of the results are both significantly different than noinline
             // and measured with high confidence.
             foreach (string subBench in baseline.Performance.InstructionCount.Keys)
             {
@@ -1231,6 +1426,16 @@ namespace PerformanceExplorer
                     string confidentVerb = confident ? "and is" : "and is not";
                     bool show = interesting && confident;
 
+                    if (interesting && confident)
+                    {
+                        // Set up exploration of this performance diff
+                        Exploration e = new Exploration();
+                        e.baseResults = baseline;
+                        e.endResults = diff;
+                        e.benchmark = b;
+                        interestingResults.Add(e);
+                    }
+
                     if (!show)
                     {
                         continue;
@@ -1253,6 +1458,8 @@ namespace PerformanceExplorer
                     Console.WriteLine("** {0} no result diffs were both significant and confident", subBench);
                 }
             }
+
+            return interestingResults;
         }
     }
 }
