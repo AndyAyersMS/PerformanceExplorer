@@ -237,7 +237,7 @@ namespace PerformanceExplorer
 
         public void Dump()
         {
-            Console.WriteLine("Inlines into {0:X8}", Token);
+            Console.WriteLine("Inlines into {0} {1:X8}", Name, Token);
             foreach (Inline x in Inlines)
             {
                 x.Dump(2);
@@ -246,21 +246,77 @@ namespace PerformanceExplorer
 
         public Inline[] GetBfsSubtree(int k)
         {
-            // Copy the inline tree up to K nodes total
-            int topLevelCount = Inlines.Length;
+            List<Inline> l = new List<Inline>(k);
+            Queue<Inline> q = new Queue<Inline>();
 
-            if (k <= topLevelCount)
+            foreach (Inline i in Inlines)
             {
-                Inline[] result = new Inline[k];
-                for (int i = 0; i < k; i++)
-                {
-                    result[i] = Inlines[i].ShallowCopy();
-                }
-
-                return result;
+                q.Enqueue(i);
             }
 
-            return null;
+            // BFS until we've enumerated the first k.
+            while (l.Count() < k)
+            {
+                Inline i = q.Dequeue();
+                l.Add(i);
+                foreach (Inline ii in i.Inlines)
+                {
+                    q.Enqueue(ii);
+                }
+            }
+
+            // DFS to copy with the list telling us
+            // what to include.
+            return GetDfsSubtree(Inlines, l);
+        }
+
+        Inline[] GetDfsSubtree(Inline[] inlines, List<Inline> filter)
+        {
+            List<Inline> newInlines = new List<Inline>();
+            foreach (Inline x in inlines)
+            {
+                if (filter.Contains(x))
+                {
+                    Inline xn = x.ShallowCopy();
+                    newInlines.Add(xn);
+                    xn.Inlines = GetDfsSubtree(x.Inlines, filter);
+                }
+            }
+
+            return newInlines.ToArray();
+        }
+
+        int GetBfsSubtree(Inline[] oldInlines, Inline[] newInlines, int remaining)
+        {
+            // Did we get enough yet?
+            if (remaining <= 0)
+            {
+                return 0;
+            }
+
+            // Nope, start in on this level.
+            for (int i = 0; i < oldInlines.Length; i++)
+            {
+                Inline oldInline = oldInlines[i];
+                Inline newInline = newInlines[i];
+                int count = oldInline.Inlines.Length;
+                int take = Math.Min(count, remaining);
+                newInline.Inlines = new Inline[take];
+
+                for (int j = 0; j < take; j++)
+                {
+                    newInline.Inlines[j] = oldInline.Inlines[j].ShallowCopy();
+                }
+
+                remaining -= take;
+
+                if (remaining == 0)
+                {
+                    break;
+                }
+            }
+
+            return remaining;
         }
 
         public Method ShallowCopy()
@@ -457,94 +513,143 @@ namespace PerformanceExplorer
 
         public void Explore()
         {
-            Console.WriteLine("$$$ Exploring perf diff between {0} and {1}", baseResults.Name, endResults.Name);
+            Console.WriteLine("$$$ Exploring significant perf diff in {0} between {1} and {2}",
+                benchmark.ShortName, baseResults.Name, endResults.Name);
+
+            // Look at methods in end results with inlines.
+            int candidateCount = 0;
+            int exploreCount = 0;
+            foreach (Method m in endResults.Methods.Values)
+            {
+                int endCount = (int)m.InlineCount;
+                if (endCount > 0)
+                {
+                    candidateCount++;
+                    exploreCount += endCount;
+                }
+            }
+            Console.WriteLine("$$$ Examining {0} methods, {1} inline combinations", candidateCount, exploreCount);
 
             // Look at methods in end results with inlines.
             foreach (Method m in endResults.Methods.Values)
             {
-                int endCount = (int) m.InlineCount;
-                if (endCount > 0)
+                int endCount = (int)m.InlineCount;
+
+                if (endCount == 0)
                 {
-                    // Noinline perf is already "known" from the baseline, so exclude that here.
-                    //
-                    // The maximal subtree perf may not be the end perf because the latter allows inlines
-                    // in all methods, and we're just expanding one method at a time here.
-                    Console.WriteLine("$$$ examining method {0:X8} with {1} inlines and {2} permutations via BFS.",
-                        m.Token, endCount, m.NumSubtrees() - 1);
-                    m.Dump();
+                    continue;
+                }
 
-                    // Now for the actual experiment. We're going to grow the method's inline tree from the
-                    // baseline tree (which is noinline) to the end result tree. For sufficiently large trees
-                    // there are lots of intermediate subtrees. For now we just do a simple breadth-first linear
-                    // exploration, as follows.
-                    Results[] explorationResults = new Results[endCount + 1];
-                    explorationResults[0] = baseResults;
+                // Noinline perf is already "known" from the baseline, so exclude that here.
+                //
+                // The maximal subtree perf may not be the end perf because the latter allows inlines
+                // in all methods, and we're just expanding one method at a time here.
+                Console.WriteLine("$$$ examining method {0} {1:X8} with {2} inlines and {3} permutations via BFS.",
+                    m.Name, m.Token, endCount, m.NumSubtrees() - 1);
+                m.Dump();
 
-                    // Make a copy of the baseline inline forest.
-                    int methodCount = baseResults.InlineForest.Methods.Length;
-                    InlineForest kForest = new InlineForest();
-                    kForest.Methods = new Method[methodCount];
-                    for (int kk = 0; kk < methodCount; kk++)
+                // Now for the actual experiment. We're going to grow the method's inline tree from the
+                // baseline tree (which is noinline) to the end result tree. For sufficiently large trees
+                // there are lots of intermediate subtrees. For now we just do a simple breadth-first linear
+                // exploration, as follows.
+                Results[] explorationResults = new Results[endCount + 1];
+                explorationResults[0] = baseResults;
+
+                // Make a copy of the baseline inline forest.
+                int methodCount = baseResults.InlineForest.Methods.Length;
+                InlineForest kForest = new InlineForest();
+                kForest.Methods = new Method[methodCount];
+                for (int kk = 0; kk < methodCount; kk++)
+                {
+                    kForest.Methods[kk] = baseResults.InlineForest.Methods[kk].ShallowCopy();
+                }
+
+                // Find this method's index in the base forest.
+                int index = 0;
+                bool found = false;
+                foreach (Method baseMethod in baseResults.InlineForest.Methods)
+                {
+                    if (m.getId().Equals(baseMethod.getId()))
                     {
-                        kForest.Methods[kk] = baseResults.InlineForest.Methods[kk].ShallowCopy();
+                        found = true;
+                        break;
                     }
 
-                    // Find this method's index in the base forest.
-                    int index = 0;
-                    bool found = false;
-                    foreach (Method baseMethod in baseResults.InlineForest.Methods)
-                    {
-                        if (m.getId().Equals(baseMethod.getId()))
-                        {
-                            found = true;
-                            break;
-                        }
+                    index++;
+                }
 
-                        index++;
-                    }
+                if (!found)
+                {
+                    Console.WriteLine("$$$ Can't find method in base method list, sorry");
+                    continue;
+                }
 
-                    if (!found)
+                for (int k = 1; k <= endCount; k++)
+                {
+                    // Build inline subtree for method with first K nodes and swap it into the tree.
+                    Inline[] mkInlines = m.GetBfsSubtree(k);
+
+                    if (mkInlines == null)
                     {
-                        Console.WriteLine("$$$ Can't find method in base method list, sorry");
+                        // Only top level working for now
+                        Console.WriteLine("$$$ Can't get this subtree yet, sorry");
                         continue;
                     }
 
-                    for (int k = 1; k <= endCount; k++)
+                    kForest.Methods[index].Inlines = mkInlines;
+                    kForest.Methods[index].InlineCount = (uint)k;
+
+                    // Externalize the inline xml
+                    XmlSerializer xo = new XmlSerializer(typeof(InlineForest));
+                    string testName = String.Format("{0}-{1}-{2:X8}-{3}", benchmark.ShortName, endResults.Name, m.Token, k);
+                    string xmlName = testName + ".xml";
+                    string resultsDir = @"c:\repos\PerformanceExplorer\results";
+                    string replayFileName = Path.Combine(resultsDir, xmlName);
+                    using (Stream xmlOutFile = new FileStream(replayFileName, FileMode.Create))
                     {
-                        // Build inline subtree for method with first K nodes and swap it into the tree.
-                        Inline[] mkInlines = m.GetBfsSubtree(k);
+                        xo.Serialize(xmlOutFile, kForest);
+                    }
+                    // Console.WriteLine("$$$ wrote inline xml to {0}", xmlName);
 
-                        if (mkInlines == null)
+                    // Run the test and record the results.
+                    XunitPerfRunner x = new XunitPerfRunner();
+                    Configuration c = new Configuration(testName);
+                    c.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
+                    c.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
+                    // This dumps a lot of xml, since we're now running as part of
+                    // xperf instead of as a standalone exe.
+                    //
+                    // c.Environment["COMPlus_JitInlineDumpXml"] = "1";
+                    Results resultsK = x.RunBenchmark(benchmark, c);
+                    resultsK.Performance.Print(c.Name);
+                    explorationResults[k] = resultsK;
+
+                    // Determine confidence level that something has changed.
+                    // Note currently, if we can't tell the difference between the two, it may
+                    // mean either (a) the method or call site was never executed, or (b)
+                    // the inline had no perf impact.
+                    // 
+                    // We could still add this info to our model, since the jit won't generally
+                    // be able to tell if a callee will be executed, but for now we just look
+                    // for impactful changes.
+                    Results resultsKm1 = explorationResults[k - 1];
+
+                    foreach (string subBench in resultsKm1.Performance.InstructionCount.Keys)
+                    {
+                        List<double> dataKm1 = resultsKm1.Performance.InstructionCount[subBench];
+                        List<double> dataK = resultsK.Performance.InstructionCount[subBench];
+                        double confidence = PerformanceData.Confidence(dataKm1, dataK);
+
+                        if (confidence > 0)
                         {
-                            // Only top level working for now
-                            Console.WriteLine("$$$ Can't get this subtree yet, sorry");
-                            continue;
+                            double avgKm1 = PerformanceData.Average(dataKm1);
+                            double avgK = PerformanceData.Average(dataK);
+                            double diff = avgK - avgKm1;
+                            double pdiff = 100.0 * diff / avgKm1;
+
+                            Console.WriteLine("$$$ Inline diff in {0}: {1} M instr ({2:0.00}%) measured with confidence {3:0.00}",
+                                subBench, diff / (1000 * 1000), pdiff, confidence);
                         }
-
-                        kForest.Methods[index].Inlines = mkInlines;
-                        kForest.Methods[index].InlineCount = (uint) k;
-
-                        // Externalize the inline xml
-                        XmlSerializer xo = new XmlSerializer(typeof(InlineForest));
-                        string testName = String.Format("{0}-{1}-{2:X8}-{3}", benchmark.ShortName, endResults.Name, m.Token, k);
-                        string xmlName = testName + ".xml";
-                        string resultsDir = @"c:\repos\PerformanceExplorer\results";
-                        string replayFileName = Path.Combine(resultsDir, xmlName);
-                        using (Stream xmlOutFile = new FileStream(replayFileName, FileMode.Create))
-                        {
-                            xo.Serialize(xmlOutFile, kForest);
-                        }
-                        Console.WriteLine("$$$ wrote inline xml to {0}", xmlName);
-
-                        // Run the test and record the results.
-                        XunitPerfRunner x = new XunitPerfRunner();
-                        Configuration c = new Configuration(testName);
-                        c.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
-                        c.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
-                        c.Environment["COMPlus_JitInlineDumpXml"] = "1";
-                        Results xr = x.RunBenchmark(benchmark, c);
-                        xr.Performance.Print(c.Name);
-                        explorationResults[k] = xr;
                     }
                 }
             }
@@ -1447,7 +1552,7 @@ namespace PerformanceExplorer
                     shown = true;
 
                     Console.WriteLine(
-                        "** {0} diff {1} in instructions between {2} ({3}) and {4} ({5}) "
+                        "$$$ {0} diff {1} in instructions between {2} ({3}) and {4} ({5}) "
                         + "{6} interesting {7:0.00}% {8} significant p={9:0.00}",
                         subBench, avgDiff / (1000 * 1000),
                         baseline.Name, baseAvg / (1000 * 1000),
@@ -1458,7 +1563,7 @@ namespace PerformanceExplorer
 
                 if (!shown)
                 {
-                    Console.WriteLine("** {0} no result diffs were both significant and confident", subBench);
+                    Console.WriteLine("$$$ {0} no result diffs were both significant and confident", subBench);
                 }
             }
 
