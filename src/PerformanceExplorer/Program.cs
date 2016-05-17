@@ -286,39 +286,6 @@ namespace PerformanceExplorer
             return newInlines.ToArray();
         }
 
-        int GetBfsSubtree(Inline[] oldInlines, Inline[] newInlines, int remaining)
-        {
-            // Did we get enough yet?
-            if (remaining <= 0)
-            {
-                return 0;
-            }
-
-            // Nope, start in on this level.
-            for (int i = 0; i < oldInlines.Length; i++)
-            {
-                Inline oldInline = oldInlines[i];
-                Inline newInline = newInlines[i];
-                int count = oldInline.Inlines.Length;
-                int take = Math.Min(count, remaining);
-                newInline.Inlines = new Inline[take];
-
-                for (int j = 0; j < take; j++)
-                {
-                    newInline.Inlines[j] = oldInline.Inlines[j].ShallowCopy();
-                }
-
-                remaining -= take;
-
-                if (remaining == 0)
-                {
-                    break;
-                }
-            }
-
-            return remaining;
-        }
-
         public Method ShallowCopy()
         {
             Method r = new Method();
@@ -505,6 +472,18 @@ namespace PerformanceExplorer
         public string Name;
     }
 
+    public class InlineDelta : IComparable<InlineDelta>
+    {
+        public Method rootMethod;
+        public double pctDelta;
+        public int index;
+        public string subBench;
+        public int CompareTo(InlineDelta other)
+        {
+            return -Math.Abs(pctDelta).CompareTo(Math.Abs(other.pctDelta));
+        }
+    }
+
     public class Exploration
     {
         public Results baseResults;
@@ -516,7 +495,9 @@ namespace PerformanceExplorer
             Console.WriteLine("$$$ Exploring significant perf diff in {0} between {1} and {2}",
                 benchmark.ShortName, baseResults.Name, endResults.Name);
 
-            // Look at methods in end results with inlines.
+            List<InlineDelta> deltas = new List<InlineDelta>();
+
+            // Count methods in end results with inlines, and total subtree size.
             int candidateCount = 0;
             int exploreCount = 0;
             foreach (Method m in endResults.Methods.Values)
@@ -530,10 +511,10 @@ namespace PerformanceExplorer
             }
             Console.WriteLine("$$$ Examining {0} methods, {1} inline combinations", candidateCount, exploreCount);
 
-            // Look at methods in end results with inlines.
-            foreach (Method m in endResults.Methods.Values)
+            // Explore each method with inlines.
+            foreach (Method rootMethod in endResults.Methods.Values)
             {
-                int endCount = (int)m.InlineCount;
+                int endCount = (int) rootMethod.InlineCount;
 
                 if (endCount == 0)
                 {
@@ -545,8 +526,8 @@ namespace PerformanceExplorer
                 // The maximal subtree perf may not be the end perf because the latter allows inlines
                 // in all methods, and we're just expanding one method at a time here.
                 Console.WriteLine("$$$ examining method {0} {1:X8} with {2} inlines and {3} permutations via BFS.",
-                    m.Name, m.Token, endCount, m.NumSubtrees() - 1);
-                m.Dump();
+                    rootMethod.Name, rootMethod.Token, endCount, rootMethod.NumSubtrees() - 1);
+                rootMethod.Dump();
 
                 // Now for the actual experiment. We're going to grow the method's inline tree from the
                 // baseline tree (which is noinline) to the end result tree. For sufficiently large trees
@@ -564,12 +545,12 @@ namespace PerformanceExplorer
                     kForest.Methods[kk] = baseResults.InlineForest.Methods[kk].ShallowCopy();
                 }
 
-                // Find this method's index in the base forest.
+                // Find the root method's index in the base forest.
                 int index = 0;
                 bool found = false;
                 foreach (Method baseMethod in baseResults.InlineForest.Methods)
                 {
-                    if (m.getId().Equals(baseMethod.getId()))
+                    if (rootMethod.getId().Equals(baseMethod.getId()))
                     {
                         found = true;
                         break;
@@ -580,18 +561,17 @@ namespace PerformanceExplorer
 
                 if (!found)
                 {
-                    Console.WriteLine("$$$ Can't find method in base method list, sorry");
+                    Console.WriteLine("$$$ Can't find root method in base method list, sorry");
                     continue;
                 }
 
                 for (int k = 1; k <= endCount; k++)
                 {
                     // Build inline subtree for method with first K nodes and swap it into the tree.
-                    Inline[] mkInlines = m.GetBfsSubtree(k);
+                    Inline[] mkInlines = rootMethod.GetBfsSubtree(k);
 
                     if (mkInlines == null)
                     {
-                        // Only top level working for now
                         Console.WriteLine("$$$ Can't get this subtree yet, sorry");
                         continue;
                     }
@@ -601,7 +581,7 @@ namespace PerformanceExplorer
 
                     // Externalize the inline xml
                     XmlSerializer xo = new XmlSerializer(typeof(InlineForest));
-                    string testName = String.Format("{0}-{1}-{2:X8}-{3}", benchmark.ShortName, endResults.Name, m.Token, k);
+                    string testName = String.Format("{0}-{1}-{2:X8}-{3}", benchmark.ShortName, endResults.Name, rootMethod.Token, k);
                     string xmlName = testName + ".xml";
                     string resultsDir = @"c:\repos\PerformanceExplorer\results";
                     string replayFileName = Path.Combine(resultsDir, xmlName);
@@ -636,22 +616,48 @@ namespace PerformanceExplorer
 
                     foreach (string subBench in resultsKm1.Performance.InstructionCount.Keys)
                     {
+                        List<double> dataK0 = baseResults.Performance.InstructionCount[subBench];
                         List<double> dataKm1 = resultsKm1.Performance.InstructionCount[subBench];
                         List<double> dataK = resultsK.Performance.InstructionCount[subBench];
-                        double confidence = PerformanceData.Confidence(dataKm1, dataK);
+                        double confidenceK = PerformanceData.Confidence(dataKm1, dataK);
+                        double confidence0 = PerformanceData.Confidence(dataK0, dataK);
 
-                        if (confidence > 0)
+                        if (confidenceK > 0)
                         {
+                            double avgK0 = PerformanceData.Average(dataK0);
                             double avgKm1 = PerformanceData.Average(dataKm1);
                             double avgK = PerformanceData.Average(dataK);
-                            double diff = avgK - avgKm1;
-                            double pdiff = 100.0 * diff / avgKm1;
+                            double diffK = avgK - avgKm1;
+                            double diff0 = avgK - avgK0;
+                            double pdiffK = 100.0 * diffK / avgKm1;
+                            double pdiff0 = 100.0 * diff0 / avgK0;
 
                             Console.WriteLine("$$$ Inline diff in {0}: {1} M instr ({2:0.00}%) measured with confidence {3:0.00}",
-                                subBench, diff / (1000 * 1000), pdiff, confidence);
+                                subBench, diffK / (1000 * 1000), pdiffK, confidenceK);
+                            Console.WriteLine("$$$ Cumulative diff in {0}: {1} M instr ({2:0.00}%) measured with confidence {3:0.00}",
+                                subBench, diff0 / (1000 * 1000), pdiff0, confidence0);
+
+                            // if (confidenceK > 0.9)
+                            {
+                                InlineDelta d = new InlineDelta();
+                                d.rootMethod = rootMethod;
+                                d.pctDelta = pdiffK;
+                                d.index = k;
+                                d.subBench = subBench;
+                                deltas.Add(d);
+                            }
                         }
                     }
                 }
+            }
+
+            // Sort deltas and display
+            deltas.Sort();
+            Console.WriteLine("$$$ --- inlines in order of impact ---");
+            foreach (InlineDelta dd in deltas)
+            {
+                Console.WriteLine("$$$  --- root {0} index {1} change {2:0.00}%",
+                    dd.rootMethod.Name, dd.index, dd.pctDelta);
             }
         }
     }
@@ -1524,7 +1530,7 @@ namespace PerformanceExplorer
                     List<double> diffData = diff.Performance.InstructionCount[subBench];
                     double diffAvg = PerformanceData.Average(diffData);
                     double confidence = PerformanceData.Confidence(baseData, diffData);
-                    double avgDiff = baseAvg - diffAvg;
+                    double avgDiff = diffAvg - baseAvg;
                     double pctDiff = 100 * avgDiff / baseAvg;
                     double interestingDiff = 1;
                     double confidentDiff = 0.9;
