@@ -244,10 +244,11 @@ namespace PerformanceExplorer
             }
         }
 
-        public Inline[] GetBfsSubtree(int k)
+        public Inline[] GetBfsSubtree(int k, out Inline lastInline)
         {
             List<Inline> l = new List<Inline>(k);
             Queue<Inline> q = new Queue<Inline>();
+            lastInline = null;
 
             foreach (Inline i in Inlines)
             {
@@ -255,10 +256,17 @@ namespace PerformanceExplorer
             }
 
             // BFS until we've enumerated the first k.
-            while (l.Count() < k)
+            while (q.Count() > 0)
             {
                 Inline i = q.Dequeue();
                 l.Add(i);
+
+                if (l.Count() == k)
+                {
+                    lastInline = i;
+                    break;
+                }
+
                 foreach (Inline ii in i.Inlines)
                 {
                     q.Enqueue(ii);
@@ -475,6 +483,7 @@ namespace PerformanceExplorer
     public class InlineDelta : IComparable<InlineDelta>
     {
         public Method rootMethod;
+        public Method inlineMethod;
         public double pctDelta;
         public int index;
         public string subBench;
@@ -568,7 +577,9 @@ namespace PerformanceExplorer
                 for (int k = 1; k <= endCount; k++)
                 {
                     // Build inline subtree for method with first K nodes and swap it into the tree.
-                    Inline[] mkInlines = rootMethod.GetBfsSubtree(k);
+                    Inline currentInline = null;
+                    Inline[] mkInlines = rootMethod.GetBfsSubtree(k, out currentInline);
+                    Method currentMethod = baseResults.Methods[currentInline.GetMethodId()];
 
                     if (mkInlines == null)
                     {
@@ -640,7 +651,9 @@ namespace PerformanceExplorer
                             // if (confidenceK > 0.9)
                             {
                                 InlineDelta d = new InlineDelta();
+                                
                                 d.rootMethod = rootMethod;
+                                d.inlineMethod = currentMethod;
                                 d.pctDelta = pdiffK;
                                 d.index = k;
                                 d.subBench = subBench;
@@ -656,8 +669,8 @@ namespace PerformanceExplorer
             Console.WriteLine("$$$ --- inlines in order of impact ---");
             foreach (InlineDelta dd in deltas)
             {
-                Console.WriteLine("$$$  --- root {0} index {1} change {2:0.00}%",
-                    dd.rootMethod.Name, dd.index, dd.pctDelta);
+                Console.WriteLine("$$$ --- root {0} index {1} inlining {2} change {3:0.00}%",
+                    dd.rootMethod.Name, dd.index, dd.inlineMethod.Name, dd.pctDelta);
             }
         }
     }
