@@ -542,7 +542,11 @@ namespace PerformanceExplorer
                 // Now for the actual experiment. We're going to grow the method's inline tree from the
                 // baseline tree (which is noinline) to the end result tree. For sufficiently large trees
                 // there are lots of intermediate subtrees. For now we just do a simple breadth-first linear
-                // exploration, as follows.
+                // exploration.
+                //
+                // Todo: consider measuring the full tree first. If there's no diff between it and the
+                // noinline tree, then don't bother enumerating and measuring subtrees. Should help focus
+                // exploration when there are many root methods.
                 Results[] explorationResults = new Results[endCount + 1];
                 explorationResults[0] = baseResults;
 
@@ -621,7 +625,7 @@ namespace PerformanceExplorer
                     //
                     // c.Environment["COMPlus_JitInlineDumpXml"] = "1";
                     Results resultsK = x.RunBenchmark(benchmark, c);
-                    resultsK.Performance.Print(c.Name);
+                    // resultsK.Performance.Print(c.Name);
                     explorationResults[k] = resultsK;
 
                     // Determine confidence level that something has changed.
@@ -633,6 +637,13 @@ namespace PerformanceExplorer
                     // be able to tell if a callee will be executed, but for now we just look
                     // for impactful changes.
                     Results resultsKm1 = explorationResults[k - 1];
+
+                    // Make sure prior run happened. Might not if we couldn't find the base method.
+                    if (resultsKm1 == null)
+                    {
+                        Console.WriteLine("$$$ Can't get prior run data, sorry");
+                        continue;
+                    }
 
                     foreach (string subBench in resultsKm1.Performance.InstructionCount.Keys)
                     {
@@ -829,6 +840,7 @@ namespace PerformanceExplorer
             }
         }
 
+        // See if there's some way to just run a particular sub benchmark?
         public override Results RunBenchmark(Benchmark b, Configuration c)
         {
             // Copy benchmark to sandbox
@@ -1575,7 +1587,7 @@ namespace PerformanceExplorer
 
                     if (interesting && confident)
                     {
-                        // Set up exploration of this performance diff
+                        // Set up exploration of this performance diff (specify sub-bench?)
                         Exploration e = new Exploration();
                         e.baseResults = baseline;
                         e.endResults = diff;
