@@ -618,7 +618,7 @@ namespace PerformanceExplorer
             if (!baseResults.Methods.ContainsKey(id))
             {
                 // Need to figure out how this happens (look at Permutate)
-                Console.WriteLine("$$$ {0} [{1}] Can't find inline method with Token {0:X8} Hash {1:X8} in base, sorry",
+                Console.WriteLine("$$$ {0} [{1}] Can't find inline method with Token {2:X8} Hash {3:X8} in base, sorry",
                     rootMethod.Name, k, id.Token, id.Hash);
                 return null;
             }
