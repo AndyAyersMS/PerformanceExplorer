@@ -544,9 +544,8 @@ namespace PerformanceExplorer
                 // there are lots of intermediate subtrees. For now we just do a simple breadth-first linear
                 // exploration.
                 //
-                // Todo: consider measuring the full tree first. If there's no diff between it and the
-                // noinline tree, then don't bother enumerating and measuring subtrees. Should help focus
-                // exploration when there are many root methods.
+                // However, we'll measure the full tree first. If there's no significant diff between it
+                // and the noinline tree, then we won't other enumerating and measuring the remaining subtrees.
                 Results[] explorationResults = new Results[endCount + 1];
                 explorationResults[0] = baseResults;
 
@@ -579,109 +578,23 @@ namespace PerformanceExplorer
                     continue;
                 }
 
-                for (int k = 1; k <= endCount; k++)
+                ExploreSubtree(kForest, index, endCount, rootMethod, benchmark, explorationResults);
+
+                bool fullyExplore = CheckResults(explorationResults, 0, endCount);
+
+                if (fullyExplore)
                 {
-                    // Build inline subtree for method with first K nodes and swap it into the tree.
-                    Inline currentInline = null;
-                    Inline[] mkInlines = rootMethod.GetBfsSubtree(k, out currentInline);
-                    MethodId id = currentInline.GetMethodId();
-                    if (!baseResults.Methods.ContainsKey(id))
+                    for (int k = 1; k <= endCount; k++)
                     {
-                        // Need to figure out how this happens (look at Permutate)
-                        Console.WriteLine("$$$ Can't find inline method with Token {0:X8} Hash {1:X8} in base, sorry", 
-                            id.Token, id.Hash);
-                        continue;
+                        Method currentMethod = 
+                            ExploreSubtree(kForest, index, k, rootMethod, benchmark, explorationResults);
+                        ShowResults(explorationResults, k, k - 1, rootMethod, currentMethod, deltas);
                     }
-                    Method currentMethod = baseResults.Methods[id];
-
-                    if (mkInlines == null)
-                    {
-                        Console.WriteLine("$$$ Can't get this subtree yet, sorry");
-                        continue;
-                    }
-
-                    kForest.Methods[index].Inlines = mkInlines;
-                    kForest.Methods[index].InlineCount = (uint)k;
-
-                    // Externalize the inline xml
-                    XmlSerializer xo = new XmlSerializer(typeof(InlineForest));
-                    string testName = String.Format("{0}-{1}-{2:X8}-{3}", benchmark.ShortName, endResults.Name, rootMethod.Token, k);
-                    string xmlName = testName + ".xml";
-                    string resultsDir = Program.RESULTS_DIR;
-                    string replayFileName = Path.Combine(resultsDir, xmlName);
-                    using (Stream xmlOutFile = new FileStream(replayFileName, FileMode.Create))
-                    {
-                        xo.Serialize(xmlOutFile, kForest);
-                    }
-                    // Console.WriteLine("$$$ wrote inline xml to {0}", xmlName);
-
-                    // Run the test and record the results.
-                    XunitPerfRunner x = new XunitPerfRunner();
-                    Configuration c = new Configuration(testName);
-                    c.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
-                    c.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
-                    // This dumps a lot of xml, since we're now running as part of
-                    // xperf instead of as a standalone exe.
-                    //
-                    // c.Environment["COMPlus_JitInlineDumpXml"] = "1";
-                    Results resultsK = x.RunBenchmark(benchmark, c);
-                    // resultsK.Performance.Print(c.Name);
-                    explorationResults[k] = resultsK;
-
-                    // Determine confidence level that something has changed.
-                    // Note currently, if we can't tell the difference between the two, it may
-                    // mean either (a) the method or call site was never executed, or (b)
-                    // the inline had no perf impact.
-                    // 
-                    // We could still add this info to our model, since the jit won't generally
-                    // be able to tell if a callee will be executed, but for now we just look
-                    // for impactful changes.
-                    Results resultsKm1 = explorationResults[k - 1];
-
-                    // Make sure prior run happened. Might not if we couldn't find the base method.
-                    if (resultsKm1 == null)
-                    {
-                        Console.WriteLine("$$$ Can't get prior run data, sorry");
-                        continue;
-                    }
-
-                    foreach (string subBench in resultsKm1.Performance.InstructionCount.Keys)
-                    {
-                        List<double> dataK0 = baseResults.Performance.InstructionCount[subBench];
-                        List<double> dataKm1 = resultsKm1.Performance.InstructionCount[subBench];
-                        List<double> dataK = resultsK.Performance.InstructionCount[subBench];
-                        double confidenceK = PerformanceData.Confidence(dataKm1, dataK);
-                        double confidence0 = PerformanceData.Confidence(dataK0, dataK);
-
-                        if (confidenceK > 0)
-                        {
-                            double avgK0 = PerformanceData.Average(dataK0);
-                            double avgKm1 = PerformanceData.Average(dataKm1);
-                            double avgK = PerformanceData.Average(dataK);
-                            double diffK = avgK - avgKm1;
-                            double diff0 = avgK - avgK0;
-                            double pdiffK = 100.0 * diffK / avgKm1;
-                            double pdiff0 = 100.0 * diff0 / avgK0;
-
-                            Console.WriteLine("$$$ Bench {0} root {1} index {2} inlining {3}", 
-                                subBench, rootMethod.Name, k, currentMethod.Name);
-                            Console.WriteLine("$$$ current delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
-                                diffK / (1000 * 1000), pdiffK, confidenceK);
-                            Console.WriteLine("$$$ cumulat delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
-                                diff0 / (1000 * 1000), pdiff0, confidence0);
-
-                            InlineDelta d = new InlineDelta();
-
-                            d.rootMethod = rootMethod;
-                            d.inlineMethod = currentMethod;
-                            d.pctDelta = pdiffK;
-                            d.index = k;
-                            d.subBench = subBench;
-                            d.confidence = confidenceK;
-
-                            deltas.Add(d);
-                        }
-                    }
+                }
+                else
+                {
+                    Console.WriteLine("$$$ Full subtree perf not significanly different, moving on");
+                    continue;
                 }
             }
 
@@ -692,6 +605,165 @@ namespace PerformanceExplorer
             {
                 Console.WriteLine("$$$ --- [{0,2:D2}] {1,12} -> {2,-12} {3,6:0.00}%",
                     dd.index, dd.rootMethod.Name, dd.inlineMethod.Name, dd.pctDelta);
+            }
+        }
+
+        Method ExploreSubtree(InlineForest kForest, int index, int k, Method rootMethod,
+            Benchmark benchmark, Results[] explorationResults)
+        {
+            // Build inline subtree for method with first K nodes and swap it into the tree.
+            Inline currentInline = null;
+            Inline[] mkInlines = rootMethod.GetBfsSubtree(k, out currentInline);
+            MethodId id = currentInline.GetMethodId();
+            if (!baseResults.Methods.ContainsKey(id))
+            {
+                // Need to figure out how this happens (look at Permutate)
+                Console.WriteLine("$$$ {0} [{1}] Can't find inline method with Token {0:X8} Hash {1:X8} in base, sorry",
+                    rootMethod.Name, k, id.Token, id.Hash);
+                return null;
+            }
+
+            Method currentMethod = baseResults.Methods[id];
+
+            if (mkInlines == null)
+            {
+                Console.WriteLine("$$$ {0} [{1}] Can't get this inline subtree yet, sorry", rootMethod.Name, k);
+                return null;
+            }
+
+            kForest.Methods[index].Inlines = mkInlines;
+            kForest.Methods[index].InlineCount = (uint) k;
+
+            // Externalize the inline xml
+            XmlSerializer xo = new XmlSerializer(typeof(InlineForest));
+            string testName = String.Format("{0}-{1}-{2:X8}-{3}", benchmark.ShortName, endResults.Name, rootMethod.Token, k);
+            string xmlName = testName + ".xml";
+            string resultsDir = Program.RESULTS_DIR;
+            string replayFileName = Path.Combine(resultsDir, xmlName);
+            using (Stream xmlOutFile = new FileStream(replayFileName, FileMode.Create))
+            {
+                xo.Serialize(xmlOutFile, kForest);
+            }
+
+            // Run the test and record the results.
+            XunitPerfRunner x = new XunitPerfRunner();
+            Configuration c = new Configuration(testName);
+            c.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
+            c.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
+            // This dumps a lot of xml, since we're now running as part of
+            // xperf instead of as a standalone exe.
+            //
+            // c.Environment["COMPlus_JitInlineDumpXml"] = "1";
+            Results resultsK = x.RunBenchmark(benchmark, c);
+            explorationResults[k] = resultsK;
+
+            return currentMethod;
+        }
+
+        // Determine confidence level that performance differs in the two indicated
+        // result sets.
+        //
+        // If we can't tell the difference between the two, it may
+        // mean either (a) the method or call site was never executed, or (b)
+        // the inlines had no perf impact.
+        //
+        // We could still add this info to our model, since the jit won't generally
+        // be able to tell if a callee will be executed, but for now we just look
+        // for impactful changes.
+        bool CheckResults(Results[] explorationResults, int diffIndex, int baseIndex)
+        {
+            Results baseResults = explorationResults[baseIndex];
+            Results diffResults = explorationResults[diffIndex];
+
+            // Make sure runs happened. Might not if we couldn't find the base method.
+            if (baseResults == null)
+            {
+                Console.WriteLine("$$$ Can't get base run data, sorry");
+                return false;
+            }
+
+            if (diffResults == null)
+            {
+                Console.WriteLine("$$$ Can't get diff run data, sorry");
+                return false;
+            }
+
+            bool signficant = false;
+
+            foreach (string subBench in baseResults.Performance.InstructionCount.Keys)
+            {
+                List<double> baseData = baseResults.Performance.InstructionCount[subBench];
+                List<double> diffData = diffResults.Performance.InstructionCount[subBench];
+                double confidence = PerformanceData.Confidence(baseData, diffData);
+                //double baseAvg = PerformanceData.Average(baseData);
+                //double diffAvg = PerformanceData.Average(diffData);
+                //double pctDiff = 100.0 * diffAvg / baseAvg;
+
+                signficant |= (confidence > 0.8);
+            }
+
+            return signficant;
+        }
+        void ShowResults(Results[] explorationResults, int diffIndex, int baseIndex, 
+            Method rootMethod, Method currentMethod, List<InlineDelta> deltas)
+        {
+            Results zeroResults = explorationResults[0];
+            Results baseResults = explorationResults[baseIndex];
+            Results diffResults = explorationResults[diffIndex];
+
+            // Make sure runs happened. Might not if we couldn't find the base method.
+            if (zeroResults == null)
+            {
+                Console.WriteLine("$$$ Can't get noinline run data, sorry");
+                return;
+            }
+
+            if (baseResults == null)
+            {
+                Console.WriteLine("$$$ Can't get base run data, sorry");
+                return;
+            }
+
+            if (diffResults == null)
+            {
+                Console.WriteLine("$$$ Can't get diff run data, sorry");
+                return;
+            }
+
+            foreach (string subBench in baseResults.Performance.InstructionCount.Keys)
+            {
+                List<double> zeroData = zeroResults.Performance.InstructionCount[subBench];
+                List<double> baseData = baseResults.Performance.InstructionCount[subBench];
+                List<double> diffData = diffResults.Performance.InstructionCount[subBench];
+
+                double confidence = PerformanceData.Confidence(baseData, diffData);
+                double baseAvg = PerformanceData.Average(baseData);
+                double diffAvg = PerformanceData.Average(diffData);
+                double change = diffAvg - baseAvg;
+                double pctDiff = 100.0 * change / baseAvg;
+
+                double confidence0 = PerformanceData.Confidence(baseData, diffData);
+                double zeroAvg = PerformanceData.Average(zeroData);
+                double change0 = diffAvg - zeroAvg;
+                double pctDiff0 = 100.0 * change0 / zeroAvg;
+
+                Console.WriteLine("$$$ Bench {0} root {1} index {2} inlining {3}",
+                    subBench, rootMethod.Name, diffIndex, currentMethod.Name);
+                Console.WriteLine("$$$ current delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
+                    change / (1000 * 1000), pctDiff, confidence);
+                Console.WriteLine("$$$ cumulat delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
+                    change0 / (1000 * 1000), pctDiff0, confidence0);
+                
+                InlineDelta d = new InlineDelta();
+                
+                d.rootMethod = rootMethod;
+                d.inlineMethod = currentMethod;
+                d.pctDelta = pctDiff;
+                d.index = diffIndex;
+                d.subBench = subBench;
+                d.confidence = confidence;
+
+                deltas.Add(d);
             }
         }
     }
@@ -1381,7 +1453,7 @@ namespace PerformanceExplorer
             Program p = new Program();
             Runner r = new CoreClrRunner();
             Runner x = new XunitPerfRunner();
-            bool buildFullModel = true;
+            bool buildFullModel = false;
             bool buildModelModel = false;
             bool buildSizeModel = false;
 
