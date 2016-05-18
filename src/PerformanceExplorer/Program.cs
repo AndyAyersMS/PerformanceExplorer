@@ -19,7 +19,7 @@ namespace PerformanceExplorer
         {
             Name = name;
             Environment = new Dictionary<string, string>();
-            ResultsDirectory = @"c:\home";
+            ResultsDirectory = Program.RESULTS_DIR;
 
             if (DisableZap)
             {
@@ -487,6 +487,7 @@ namespace PerformanceExplorer
         public double pctDelta;
         public int index;
         public string subBench;
+        public double confidence;
         public int CompareTo(InlineDelta other)
         {
             return -Math.Abs(pctDelta).CompareTo(Math.Abs(other.pctDelta));
@@ -579,7 +580,15 @@ namespace PerformanceExplorer
                     // Build inline subtree for method with first K nodes and swap it into the tree.
                     Inline currentInline = null;
                     Inline[] mkInlines = rootMethod.GetBfsSubtree(k, out currentInline);
-                    Method currentMethod = baseResults.Methods[currentInline.GetMethodId()];
+                    MethodId id = currentInline.GetMethodId();
+                    if (!baseResults.Methods.ContainsKey(id))
+                    {
+                        // Need to figure out how this happens (look at Permutate)
+                        Console.WriteLine("$$$ Can't find inline method with Token {0:X8} Hash {1:X8} in base, sorry", 
+                            id.Token, id.Hash);
+                        continue;
+                    }
+                    Method currentMethod = baseResults.Methods[id];
 
                     if (mkInlines == null)
                     {
@@ -594,7 +603,7 @@ namespace PerformanceExplorer
                     XmlSerializer xo = new XmlSerializer(typeof(InlineForest));
                     string testName = String.Format("{0}-{1}-{2:X8}-{3}", benchmark.ShortName, endResults.Name, rootMethod.Token, k);
                     string xmlName = testName + ".xml";
-                    string resultsDir = @"c:\repos\PerformanceExplorer\results";
+                    string resultsDir = Program.RESULTS_DIR;
                     string replayFileName = Path.Combine(resultsDir, xmlName);
                     using (Stream xmlOutFile = new FileStream(replayFileName, FileMode.Create))
                     {
@@ -643,22 +652,23 @@ namespace PerformanceExplorer
                             double pdiffK = 100.0 * diffK / avgKm1;
                             double pdiff0 = 100.0 * diff0 / avgK0;
 
-                            Console.WriteLine("$$$ Inline diff in {0}: {1} M instr ({2:0.00}%) measured with confidence {3:0.00}",
-                                subBench, diffK / (1000 * 1000), pdiffK, confidenceK);
-                            Console.WriteLine("$$$ Cumulative diff in {0}: {1} M instr ({2:0.00}%) measured with confidence {3:0.00}",
-                                subBench, diff0 / (1000 * 1000), pdiff0, confidence0);
+                            Console.WriteLine("$$$ Bench {0} root {1} index {2} inlining {3}", 
+                                subBench, rootMethod.Name, k, currentMethod.Name);
+                            Console.WriteLine("$$$ current delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
+                                diffK / (1000 * 1000), pdiffK, confidenceK);
+                            Console.WriteLine("$$$ cumulat delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
+                                diff0 / (1000 * 1000), pdiff0, confidence0);
 
-                            // if (confidenceK > 0.9)
-                            {
-                                InlineDelta d = new InlineDelta();
-                                
-                                d.rootMethod = rootMethod;
-                                d.inlineMethod = currentMethod;
-                                d.pctDelta = pdiffK;
-                                d.index = k;
-                                d.subBench = subBench;
-                                deltas.Add(d);
-                            }
+                            InlineDelta d = new InlineDelta();
+
+                            d.rootMethod = rootMethod;
+                            d.inlineMethod = currentMethod;
+                            d.pctDelta = pdiffK;
+                            d.index = k;
+                            d.subBench = subBench;
+                            d.confidence = confidenceK;
+
+                            deltas.Add(d);
                         }
                     }
                 }
@@ -686,8 +696,8 @@ namespace PerformanceExplorer
     {
         public CoreClrRunner()
         {
-            cmdExe = @"c:\windows\system32\cmd.exe";
-            runnerExe = @"c:\repos\coreclr\bin\tests\windows_nt.x64.Release\tests\core_root\corerun.exe";
+            cmdExe = Program.SHELL;
+            runnerExe = Program.CORERUN;
             verbose = true;
             veryVerbose = true;
         }
@@ -775,14 +785,14 @@ namespace PerformanceExplorer
             {
                 if (verbose)
                 {
-                    Console.WriteLine("Cleaning old xunit-perf sandbox '{0}'", sandboxDir);
+                    Console.WriteLine("...Cleaning old xunit-perf sandbox '{0}'", sandboxDir);
                 }
                 Directory.Delete(sandboxDir, true);
             }
 
             if (verbose)
             {
-                Console.WriteLine("Creating new xunit-perf sandbox '{0}'", sandboxDir);
+                Console.WriteLine("...Creating new xunit-perf sandbox '{0}'", sandboxDir);
             }
             Directory.CreateDirectory(sandboxDir);
             DirectoryInfo sandboxDirectoryInfo = new DirectoryInfo(sandboxDir);
@@ -900,8 +910,8 @@ namespace PerformanceExplorer
             return 1;
         }
 
-        static string sandboxDir = @"c:\repos\PerformanceExplorer\sandbox";
-        static string coreclrRoot = @"c:\repos\coreclr";
+        static string sandboxDir = Program.SANDBOX_DIR;
+        static string coreclrRoot = Program.CORECLR_ROOT;
         static string testOverlayRoot = Path.Combine(coreclrRoot, @"bin\tests\Windows_NT.x64.Release\tests\Core_Root");
         static bool sandboxIsSetup;
         bool verbose;
@@ -922,7 +932,7 @@ namespace PerformanceExplorer
             Console.WriteLine("---- No Inline Model for {0}", b.ShortName);
 
             Configuration noInlineConfig = new Configuration("noinline");
-            noInlineConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+            noInlineConfig.ResultsDirectory = Program.RESULTS_DIR;
             noInlineConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
             noInlineConfig.Environment["COMPlus_JitInlineLimit"] = "0";
             noInlineConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
@@ -950,7 +960,7 @@ namespace PerformanceExplorer
             }
 
             long inlineCount = f.Methods.Sum(m => m.InlineCount);
-            Console.WriteLine("*** Nonline config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
+            Console.WriteLine("*** Noinline config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
             results.InlineForest = f;
 
             // Determine set of unique method Ids and build map from ID to method
@@ -1000,7 +1010,7 @@ namespace PerformanceExplorer
             for (int i = 0; i < x.Iterations(); i++)
             {
                 Configuration noinlinePerfConfig = new Configuration("noinline-perf-" + i);
-                noinlinePerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                noinlinePerfConfig.ResultsDirectory = Program.RESULTS_DIR;
                 noinlinePerfConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
                 noinlinePerfConfig.Environment["COMPlus_JitInlineLimit"] = "0";
                 Results perfResults = x.RunBenchmark(b, noinlinePerfConfig);
@@ -1023,7 +1033,7 @@ namespace PerformanceExplorer
             Console.WriteLine("---- Legacy Model for {0}", b.ShortName);
 
             Configuration legacyConfig = new Configuration("legacy");
-            legacyConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+            legacyConfig.ResultsDirectory = Program.RESULTS_DIR;
             legacyConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
             Results legacyResults = r.RunBenchmark(b, legacyConfig);
@@ -1055,7 +1065,7 @@ namespace PerformanceExplorer
             for (int i = 0; i < x.Iterations(); i++)
             {
                 Configuration legacyPerfConfig = new Configuration("legacy-perf-" + i);
-                legacyPerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                legacyPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
                 Results perfResults = x.RunBenchmark(b, legacyPerfConfig);
                 legacyResults.Performance = perfResults.Performance;
             }
@@ -1073,7 +1083,7 @@ namespace PerformanceExplorer
             Console.WriteLine("----");
             Console.WriteLine("---- Full Model for {0}", b.ShortName);
 
-            string resultsDir = @"c:\repos\PerformanceExplorer\results";
+            string resultsDir = Program.RESULTS_DIR;
             // Because we're jitting and inlining some methods won't be jitted on
             // their own at all. To unearth full trees for all methods we need
             // to iterate. The rough idea is as follows.
@@ -1238,7 +1248,7 @@ namespace PerformanceExplorer
                 fullPerfConfig.Environment["COMPlus_JitInlinePolicyFull"] = "1";
                 fullPerfConfig.Environment["COMPlus_JitInlineDepth"] = "10";
                 fullPerfConfig.Environment["COMPlus_JitInlineSize"] = "200";
-                fullPerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                fullPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
                 Results perfResults = x.RunBenchmark(b, fullPerfConfig);
                 fullResults.Performance = perfResults.Performance;
             }
@@ -1256,7 +1266,7 @@ namespace PerformanceExplorer
             Console.WriteLine("---- Model Model for {0}", b.ShortName);
 
             Configuration modelConfig = new Configuration("model");
-            modelConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+            modelConfig.ResultsDirectory = Program.RESULTS_DIR;
             modelConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
             modelConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
@@ -1281,7 +1291,7 @@ namespace PerformanceExplorer
             for (int i = 0; i < x.Iterations(); i++)
             {
                 Configuration modelPerfConfig = new Configuration("model-perf-" + i);
-                modelPerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                modelPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
                 modelPerfConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
                 Results perfResults = x.RunBenchmark(b, modelPerfConfig);
                 results.Performance = perfResults.Performance;
@@ -1299,7 +1309,7 @@ namespace PerformanceExplorer
             Console.WriteLine("---- Size Model for {0}", b.ShortName);
 
             Configuration sizeConfig = new Configuration("size");
-            sizeConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+            sizeConfig.ResultsDirectory = Program.RESULTS_DIR;
             sizeConfig.Environment["COMPlus_JitInlinePolicySize"] = "1";
             sizeConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
@@ -1324,7 +1334,7 @@ namespace PerformanceExplorer
             for (int i = 0; i < x.Iterations(); i++)
             {
                 Configuration sizePerfConfig = new Configuration("size-perf-" + i);
-                sizePerfConfig.ResultsDirectory = @"c:\repos\PerformanceExplorer\results";
+                sizePerfConfig.ResultsDirectory = Program.RESULTS_DIR;
                 sizePerfConfig.Environment["COMPlus_JitInlinePolicySize"] = "1";
                 Results perfResults = x.RunBenchmark(b, sizePerfConfig);
                 results.Performance = perfResults.Performance;
@@ -1346,24 +1356,34 @@ namespace PerformanceExplorer
 
         }
 
+        // public static string CORERUN
+        public static string CORECLR_ROOT = @"c:\repos\coreclr";
+        public static string CORECLR_BENCHMARK_ROOT = @"c:\repos\coreclr\bin\tests\Windows_NT.x64.Release\JIT\performance\codequality";
+        public static string CORERUN = @"c:\repos\coreclr\bin\tests\Windows_NT.x64.release\tests\Core_Root\corerun.exe";
+        public static string SHELL = @"c:\windows\system32\cmd.exe";
+        public static string RESULTS_DIR = @"c:\repos\PerformanceExplorer\results";
+        public static string SANDBOX_DIR = @"c:\repos\PerformanceExplorer\sandbox";
+
         public static int Main(string[] args)
         {
             Program p = new Program();
             Runner r = new CoreClrRunner();
             Runner x = new XunitPerfRunner();
-            bool buildFullModel = false;
+            bool buildFullModel = true;
             bool buildModelModel = false;
             bool buildSizeModel = false;
 
             // Enumerate benchmarks that can be run
+            string benchmarkRoot = CORECLR_BENCHMARK_ROOT;
+            Console.WriteLine("...Enumerating benchmarks under {0}", benchmarkRoot);
             Dictionary<string, string> benchmarks = new Dictionary<string, string>();
-
-            string benchmarkRoot = @"c:\repos\coreclr\bin\tests\windows_nt.x64.release\jit\performance\codequality";
             DirectoryInfo benchmarkRootInfo = new DirectoryInfo(benchmarkRoot);
             foreach (FileInfo f in benchmarkRootInfo.GetFiles("*.exe", SearchOption.AllDirectories))
             {
                 benchmarks.Add(f.Name, f.FullName);
             }
+
+            Console.WriteLine("...Found {0} benchmarks", benchmarks.Count());
 
             // If an arg is passed, run benchmarks that contain that arg as a substring.
             // Otherwise run them all.
@@ -1371,11 +1391,12 @@ namespace PerformanceExplorer
 
             if (args.Length == 0)
             {
+                Console.WriteLine("...Running all benchmarks");
                 benchmarksToRun.AddRange(benchmarks.Values);
             }
             else
             {
-                Console.WriteLine("Scanning for benchmarks....");
+                Console.WriteLine("...Scanning for benchmarks matching your pattern(s)");
                 foreach (string item in args)
                 {
                     int beforeCount = benchmarksToRun.Count;
@@ -1389,7 +1410,7 @@ namespace PerformanceExplorer
 
                     if (benchmarksToRun.Count == 0)
                     {
-                        Console.WriteLine("No benchmark matches {0}", item);
+                        Console.WriteLine("No benchmark matches '{0}'", item);
                     }
                     else
                     {
@@ -1454,8 +1475,8 @@ namespace PerformanceExplorer
                     allResults.Add(fullResults);
 
                     CallGraph g = new CallGraph(fullResults);
-                    g.DumpDot(@"c:\repos\PerformanceExplorer\results\" + b.ShortName + "-callgraph.dot");
-                }
+                    string fileName = b.ShortName + "-callgraph.dot";
+                    g.DumpDot(Path.Combine(RESULTS_DIR, fileName));                }
 
                 if (buildModelModel)
                 {
@@ -1485,7 +1506,6 @@ namespace PerformanceExplorer
                 foreach(Exploration e in thingsToExplore)
                 {
                     e.Explore();
-                    break;
                 }
             }
 
