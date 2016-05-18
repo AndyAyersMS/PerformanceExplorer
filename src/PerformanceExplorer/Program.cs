@@ -676,11 +676,11 @@ namespace PerformanceExplorer
 
             // Sort deltas and display
             deltas.Sort();
-            Console.WriteLine("$$$ --- inlines in order of impact ---");
+            Console.WriteLine("$$$ --- {0}: inlines in order of impact ---", endResults.Name);
             foreach (InlineDelta dd in deltas)
             {
-                Console.WriteLine("$$$ --- root {0} index {1} inlining {2} change {3:0.00}%",
-                    dd.rootMethod.Name, dd.index, dd.inlineMethod.Name, dd.pctDelta);
+                Console.WriteLine("$$$ --- [{0,2:D2}] {1,12} -> {2,-12} {3,6:0.00}%",
+                    dd.index, dd.rootMethod.Name, dd.inlineMethod.Name, dd.pctDelta);
             }
         }
     }
