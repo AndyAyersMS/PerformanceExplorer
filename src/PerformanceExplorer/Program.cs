@@ -578,12 +578,16 @@ namespace PerformanceExplorer
                     continue;
                 }
 
-                ExploreSubtree(kForest, index, endCount, rootMethod, benchmark, explorationResults);
+                Method lastMethod = 
+                    ExploreSubtree(kForest, index, endCount, rootMethod, benchmark, explorationResults);
 
                 bool fullyExplore = CheckResults(explorationResults, 0, endCount);
 
                 if (fullyExplore)
                 {
+                    Console.WriteLine("$$$ Full subtree perf significant, exploring...");
+                    ShowResults(explorationResults, endCount, 0, rootMethod, lastMethod, null);
+
                     for (int k = 1; k <= endCount; k++)
                     {
                         Method currentMethod = 
@@ -650,10 +654,6 @@ namespace PerformanceExplorer
             Configuration c = new Configuration(testName);
             c.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
             c.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
-            // This dumps a lot of xml, since we're now running as part of
-            // xperf instead of as a standalone exe.
-            //
-            // c.Environment["COMPlus_JitInlineDumpXml"] = "1";
             Results resultsK = x.RunBenchmark(benchmark, c);
             explorationResults[k] = resultsK;
 
@@ -695,9 +695,6 @@ namespace PerformanceExplorer
                 List<double> baseData = baseResults.Performance.InstructionCount[subBench];
                 List<double> diffData = diffResults.Performance.InstructionCount[subBench];
                 double confidence = PerformanceData.Confidence(baseData, diffData);
-                //double baseAvg = PerformanceData.Average(baseData);
-                //double diffAvg = PerformanceData.Average(diffData);
-                //double pctDiff = 100.0 * diffAvg / baseAvg;
 
                 signficant |= (confidence > 0.8);
             }
@@ -753,17 +750,20 @@ namespace PerformanceExplorer
                     change / (1000 * 1000), pctDiff, confidence);
                 Console.WriteLine("$$$ cumulat delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
                     change0 / (1000 * 1000), pctDiff0, confidence0);
-                
-                InlineDelta d = new InlineDelta();
-                
-                d.rootMethod = rootMethod;
-                d.inlineMethod = currentMethod;
-                d.pctDelta = pctDiff;
-                d.index = diffIndex;
-                d.subBench = subBench;
-                d.confidence = confidence;
 
-                deltas.Add(d);
+                if (deltas != null)
+                {
+                    InlineDelta d = new InlineDelta();
+
+                    d.rootMethod = rootMethod;
+                    d.inlineMethod = currentMethod;
+                    d.pctDelta = pctDiff;
+                    d.index = diffIndex;
+                    d.subBench = subBench;
+                    d.confidence = confidence;
+
+                    deltas.Add(d);
+                }
             }
         }
     }
