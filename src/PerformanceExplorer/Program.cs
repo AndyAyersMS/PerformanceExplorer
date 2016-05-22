@@ -452,6 +452,8 @@ namespace PerformanceExplorer
     // InlineForest describes the inline forest used for the run.
     public class InlineForest
     {
+        public string Policy;
+        public string DataSchema;
         public Method[] Methods;
     }
 
@@ -553,6 +555,7 @@ namespace PerformanceExplorer
                 // Make a copy of the baseline inline forest.
                 int methodCount = baseResults.InlineForest.Methods.Length;
                 InlineForest kForest = new InlineForest();
+                kForest.Policy = "ReplayPolicy";
                 kForest.Methods = new Method[methodCount];
                 for (int kk = 0; kk < methodCount; kk++)
                 {
@@ -656,13 +659,23 @@ namespace PerformanceExplorer
                 xo.Serialize(xmlOutFile, kForest);
             }
 
-            // Run the test and record the results.
+            // Run the test and record the perf results.
             XunitPerfRunner x = new XunitPerfRunner();
             Configuration c = new Configuration(testName);
             c.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
             c.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
             Results resultsK = x.RunBenchmark(benchmark, c);
             explorationResults[k] = resultsK;
+
+            // Run test and recapture the inline XML along with observational data about the last inline
+            string retestName = String.Format("{0}-{1}-{2:X8}-{3}-data", benchmark.ShortName, endResults.Name, rootMethod.Token, k);
+            Configuration cr = new Configuration(retestName);
+            CoreClrRunner clr = new CoreClrRunner();
+            cr.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
+            cr.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
+            cr.Environment["COMPlus_JitInlineDumpXml"] = "1";
+            cr.Environment["COMPlus_JitInlineDumpData"] = "1";
+            Results ResultsClr = clr.RunBenchmark(benchmark, cr);
 
             return currentMethod;
         }
@@ -1458,7 +1471,7 @@ namespace PerformanceExplorer
 
         // Various aspects of the exploration that can be enabled/disabled.
         // Todo: Make this configurable.
-        public static bool UseFullModel = true;
+        public static bool UseFullModel = false;
         public static bool UseModelModel = false;
         public static bool UseSizeModel = false;
         public static bool ExploreInlines = true;
@@ -1580,7 +1593,8 @@ namespace PerformanceExplorer
 
                     CallGraph g = new CallGraph(fullResults);
                     string fileName = b.ShortName + "-callgraph.dot";
-                    g.DumpDot(Path.Combine(RESULTS_DIR, fileName));                }
+                    g.DumpDot(Path.Combine(RESULTS_DIR, fileName));
+                }
 
                 if (UseModelModel)
                 {
