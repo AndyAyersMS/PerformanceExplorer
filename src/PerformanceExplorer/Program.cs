@@ -213,8 +213,8 @@ namespace PerformanceExplorer
     {
         public Method()
         {
-            Callers = new HashSet<Method>();
-            Callees = new HashSet<Method>();
+            Callers = new List<Method>();
+            Callees = new List<Method>();
         }
 
         public MethodId getId()
@@ -318,8 +318,8 @@ namespace PerformanceExplorer
         public bool CheckIsDuplicate() { return IsDuplicate; }
         private bool IsDuplicate;
 
-        public HashSet<Method> Callers;
-        public HashSet<Method> Callees;
+        public List<Method> Callers;
+        public List<Method> Callees;
     }
 
     // THe jit-visible call graph
@@ -388,7 +388,7 @@ namespace PerformanceExplorer
                 outFile.WriteLine("digraph CallGraph {");
                 foreach (Method m in Nodes)
                 {
-                    outFile.WriteLine("\"{0:X8}-{1:X8}\";", m.Token, m.Hash);
+                    outFile.WriteLine("\"{0:X8}-{1:X8}\" [ label=\"{2}\"];", m.Token, m.Hash, m.Name);
 
                     foreach (Method p in m.Callees)
                     {
@@ -528,13 +528,14 @@ namespace PerformanceExplorer
 
                 if (endCount == 0)
                 {
+                    // No inlines, so move on to next method.
                     continue;
                 }
 
                 // Noinline perf is already "known" from the baseline, so exclude that here.
                 //
-                // The maximal subtree perf may not be the end perf because the latter allows inlines
-                // in all methods, and we're just expanding one method at a time here.
+                // The maximal subtree perf may not equal the end perf because the latter allows inlines
+                // in all methods, and we're just inlining into one method at a time here.
                 Console.WriteLine("$$$ examining method {0} {1:X8} with {2} inlines and {3} permutations via BFS.",
                     rootMethod.Name, rootMethod.Token, endCount, rootMethod.NumSubtrees() - 1);
                 rootMethod.Dump();
@@ -545,7 +546,7 @@ namespace PerformanceExplorer
                 // exploration.
                 //
                 // However, we'll measure the full tree first. If there's no significant diff between it
-                // and the noinline tree, then we won't other enumerating and measuring the remaining subtrees.
+                // and the noinline tree, then we won't bother enumerating and measuring the remaining subtrees.
                 Results[] explorationResults = new Results[endCount + 1];
                 explorationResults[0] = baseResults;
 
@@ -621,9 +622,15 @@ namespace PerformanceExplorer
             MethodId id = currentInline.GetMethodId();
             if (!baseResults.Methods.ContainsKey(id))
             {
+                // See if we can snag name from full method set.
+                string missingMethodName = "???";
+                if (endResults.Methods.ContainsKey(id))
+                {
+                    missingMethodName = endResults.Methods[id].Name;
+                }
                 // Need to figure out how this happens (look at Permutate)
-                Console.WriteLine("$$$ {0} [{1}] Can't find inline method with Token {2:X8} Hash {3:X8} in base, sorry",
-                    rootMethod.Name, k, id.Token, id.Hash);
+                Console.WriteLine("$$$ {0} [{1}] Can't find inline method {2} (Token {3:X8} Hash {4:X8}) in base, sorry",
+                    rootMethod.Name, k, missingMethodName, id.Token, id.Hash);
                 return null;
             }
 
@@ -1440,7 +1447,8 @@ namespace PerformanceExplorer
 
         }
 
-        // public static string CORERUN
+        // Paths to repos and binaries. 
+        // Todo: Make this configurable.
         public static string CORECLR_ROOT = @"c:\repos\coreclr";
         public static string CORECLR_BENCHMARK_ROOT = @"c:\repos\coreclr\bin\tests\Windows_NT.x64.Release\JIT\performance\codequality";
         public static string CORERUN = @"c:\repos\coreclr\bin\tests\Windows_NT.x64.release\tests\Core_Root\corerun.exe";
@@ -1448,14 +1456,16 @@ namespace PerformanceExplorer
         public static string RESULTS_DIR = @"c:\repos\PerformanceExplorer\results";
         public static string SANDBOX_DIR = @"c:\repos\PerformanceExplorer\sandbox";
 
+        // Various aspects of the exploration that can be enabled/disabled.
+        // Todo: Make this configurable.
+        public static bool UseFullModel = true;
+        public static bool UseModelModel = false;
+        public static bool UseSizeModel = false;
+        public static bool ExploreInlines = true;
+
         public static int Main(string[] args)
         {
             Program p = new Program();
-            Runner r = new CoreClrRunner();
-            Runner x = new XunitPerfRunner();
-            bool buildFullModel = false;
-            bool buildModelModel = false;
-            bool buildSizeModel = false;
 
             // Enumerate benchmarks that can be run
             string benchmarkRoot = CORECLR_BENCHMARK_ROOT;
@@ -1504,6 +1514,16 @@ namespace PerformanceExplorer
                 }
             }
 
+            int result = p.RunBenchmarks(benchmarksToRun);
+
+            return result;
+        }
+
+        int RunBenchmarks(List<string> benchmarksToRun)
+        {
+            Runner r = new CoreClrRunner();
+            Runner x = new XunitPerfRunner();
+
             foreach (string s in benchmarksToRun)
             {
                 List<Results> allResults = new List<Results>();
@@ -1512,7 +1532,7 @@ namespace PerformanceExplorer
                 b.FullPath = s;
                 b.ExitCode = 100;
 
-                Results noInlineResults = p.BuildNoInlineModel(r, x, b);
+                Results noInlineResults = BuildNoInlineModel(r, x, b);
                 if (noInlineResults == null)
                 {
                     Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
@@ -1520,7 +1540,7 @@ namespace PerformanceExplorer
                 }
                 allResults.Add(noInlineResults);
 
-                Results legacyResults = p.BuildLegacyModel(r, x, b);
+                Results legacyResults = BuildLegacyModel(r, x, b);
                 if (legacyResults == null)
                 {
                     Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
@@ -1547,9 +1567,9 @@ namespace PerformanceExplorer
                     continue;
                 }
 
-                if (buildFullModel)
+                if (UseFullModel)
                 {
-                    Results fullResults = p.BuildFullModel(r, x, b, noInlineResults);
+                    Results fullResults = BuildFullModel(r, x, b, noInlineResults);
                     if (fullResults == null)
                     {
                         Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
@@ -1562,9 +1582,9 @@ namespace PerformanceExplorer
                     string fileName = b.ShortName + "-callgraph.dot";
                     g.DumpDot(Path.Combine(RESULTS_DIR, fileName));                }
 
-                if (buildModelModel)
+                if (UseModelModel)
                 {
-                    Results modelResults = p.BuildModelModel(r, x, b);
+                    Results modelResults = BuildModelModel(r, x, b);
                     if (modelResults == null)
                     {
                         Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
@@ -1573,9 +1593,9 @@ namespace PerformanceExplorer
                     allResults.Add(modelResults);
                 }
 
-                if (buildSizeModel)
+                if (UseSizeModel)
                 {
-                    Results sizeResults = p.BuildSizeModel(r, x, b);
+                    Results sizeResults = BuildSizeModel(r, x, b);
                     if (sizeResults == null)
                     {
                         Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
@@ -1584,12 +1604,16 @@ namespace PerformanceExplorer
                     allResults.Add(sizeResults);
                 }
 
-                p.ComparePerf(allResults);
-                var thingsToExplore = p.ExaminePerf(b, allResults);
+                ComparePerf(allResults);
 
-                foreach(Exploration e in thingsToExplore)
+                if (ExploreInlines)
                 {
-                    e.Explore();
+                    var thingsToExplore = ExaminePerf(b, allResults);
+
+                    foreach (Exploration e in thingsToExplore)
+                    {
+                        e.Explore();
+                    }
                 }
             }
 
