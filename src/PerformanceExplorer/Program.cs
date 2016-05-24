@@ -485,7 +485,7 @@ namespace PerformanceExplorer
     public class InlineDelta : IComparable<InlineDelta>
     {
         public Method rootMethod;
-        public Method inlineMethod;
+        public MethodId inlineMethodId;
         public double pctDelta;
         public int index;
         public string subBench;
@@ -582,26 +582,26 @@ namespace PerformanceExplorer
                     continue;
                 }
 
-                Method lastMethod = 
+                Inline lastInline = 
                     ExploreSubtree(kForest, index, endCount, rootMethod, benchmark, explorationResults);
 
-                bool fullyExplore = CheckResults(explorationResults, 0, endCount);
+                bool fullyExplore = CheckResults(explorationResults, endCount, 0);
 
                 if (fullyExplore)
                 {
                     Console.WriteLine("$$$ Full subtree perf significant, exploring...");
-                    ShowResults(explorationResults, endCount, 0, rootMethod, lastMethod, null);
+                    ShowResults(explorationResults, endCount, 0, rootMethod, lastInline, null);
 
                     for (int k = 1; k <= endCount; k++)
                     {
-                        Method currentMethod = 
+                        Inline lastInlineK = 
                             ExploreSubtree(kForest, index, k, rootMethod, benchmark, explorationResults);
-                        ShowResults(explorationResults, k, k - 1, rootMethod, currentMethod, deltas);
+                        ShowResults(explorationResults, k, k - 1, rootMethod, lastInlineK, deltas);
                     }
                 }
                 else
                 {
-                    Console.WriteLine("$$$ Full subtree perf not significanly different, moving on");
+                    Console.WriteLine("$$$ Full subtree perf not significantly different, moving on");
                     continue;
                 }
             }
@@ -611,33 +611,28 @@ namespace PerformanceExplorer
             Console.WriteLine("$$$ --- {0}: inlines in order of impact ---", endResults.Name);
             foreach (InlineDelta dd in deltas)
             {
+                string currentMethodName = null;
+                if (baseResults.Methods != null && baseResults.Methods.ContainsKey(dd.inlineMethodId))
+                {
+                    currentMethodName = baseResults.Methods[dd.inlineMethodId].Name;
+                }
+                else
+                {
+                    currentMethodName = String.Format("Token {0:X8} Hash {1:X8}",
+                        dd.inlineMethodId.Token, dd.inlineMethodId.Hash);
+                }
+
                 Console.WriteLine("$$$ --- [{0,2:D2}] {1,12} -> {2,-12} {3,6:0.00}%",
-                    dd.index, dd.rootMethod.Name, dd.inlineMethod.Name, dd.pctDelta);
+                    dd.index, dd.rootMethod.Name, currentMethodName, dd.pctDelta);
             }
         }
 
-        Method ExploreSubtree(InlineForest kForest, int index, int k, Method rootMethod,
+        Inline ExploreSubtree(InlineForest kForest, int index, int k, Method rootMethod,
             Benchmark benchmark, Results[] explorationResults)
         {
             // Build inline subtree for method with first K nodes and swap it into the tree.
             Inline currentInline = null;
             Inline[] mkInlines = rootMethod.GetBfsSubtree(k, out currentInline);
-            MethodId id = currentInline.GetMethodId();
-            if (!baseResults.Methods.ContainsKey(id))
-            {
-                // See if we can snag name from full method set.
-                string missingMethodName = "???";
-                if (endResults.Methods.ContainsKey(id))
-                {
-                    missingMethodName = endResults.Methods[id].Name;
-                }
-                // Need to figure out how this happens (look at Permutate)
-                Console.WriteLine("$$$ {0} [{1}] Can't find inline method {2} (Token {3:X8} Hash {4:X8}) in base, sorry",
-                    rootMethod.Name, k, missingMethodName, id.Token, id.Hash);
-                return null;
-            }
-
-            Method currentMethod = baseResults.Methods[id];
 
             if (mkInlines == null)
             {
@@ -677,7 +672,7 @@ namespace PerformanceExplorer
             cr.Environment["COMPlus_JitInlineDumpData"] = "1";
             Results ResultsClr = clr.RunBenchmark(benchmark, cr);
 
-            return currentMethod;
+            return currentInline;
         }
 
         // Determine confidence level that performance differs in the two indicated
@@ -722,7 +717,7 @@ namespace PerformanceExplorer
             return signficant;
         }
         void ShowResults(Results[] explorationResults, int diffIndex, int baseIndex, 
-            Method rootMethod, Method currentMethod, List<InlineDelta> deltas)
+            Method rootMethod, Inline currentInline, List<InlineDelta> deltas)
         {
             Results zeroResults = explorationResults[0];
             Results baseResults = explorationResults[baseIndex];
@@ -764,8 +759,24 @@ namespace PerformanceExplorer
                 double change0 = diffAvg - zeroAvg;
                 double pctDiff0 = 100.0 * change0 / zeroAvg;
 
+                // Try and get the name of the last inline.
+                // We may not know it, if the method was prejitted, since it will
+                // never be a jit root.
+                // If so, use the token value.
+                MethodId currentMethodId = currentInline.GetMethodId();
+                string currentMethodName = null;
+                if (baseResults.Methods != null && baseResults.Methods.ContainsKey(currentMethodId))
+                {
+                    currentMethodName = baseResults.Methods[currentMethodId].Name;
+                }
+                else
+                {
+                    currentMethodName = String.Format("Token {0:X8} Hash {1:X8}", 
+                        currentMethodId.Token, currentMethodId.Hash);
+                }
+
                 Console.WriteLine("$$$ Bench {0} root {1} index {2} inlining {3}",
-                    subBench, rootMethod.Name, diffIndex, currentMethod.Name);
+                    subBench, rootMethod.Name, diffIndex, currentMethodName);
                 Console.WriteLine("$$$ current delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
                     change / (1000 * 1000), pctDiff, confidence);
                 Console.WriteLine("$$$ cumulat delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
@@ -776,7 +787,7 @@ namespace PerformanceExplorer
                     InlineDelta d = new InlineDelta();
 
                     d.rootMethod = rootMethod;
-                    d.inlineMethod = currentMethod;
+                    d.inlineMethodId = currentMethodId;
                     d.pctDelta = pctDiff;
                     d.index = diffIndex;
                     d.subBench = subBench;
