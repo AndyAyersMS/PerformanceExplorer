@@ -507,7 +507,11 @@ namespace PerformanceExplorer
             Console.WriteLine("$$$ Exploring significant perf diff in {0} between {1} and {2}",
                 benchmark.ShortName, baseResults.Name, endResults.Name);
 
+            // Summary of performance results
             List<InlineDelta> deltas = new List<InlineDelta>();
+
+            // Fully detailed result trees with performance data
+            Dictionary<MethodId, Results[]> recapturedData = new Dictionary<MethodId, Results[]>();
 
             // Count methods in end results with inlines, and total subtree size.
             int candidateCount = 0;
@@ -552,6 +556,12 @@ namespace PerformanceExplorer
                 Results[] explorationResults = new Results[endCount + 1];
                 explorationResults[0] = baseResults;
 
+                // After we measure perf via xunit-perf, do a normal run to recapture inline observations.
+                // We could enable observations in the perf run, but we'd get inline xml for all the xunit
+                // scaffolding too. This way we get something minimal.
+                Results[] recaptureResults = new Results[endCount + 1];
+                recaptureResults[0] = baseResults;
+
                 // We take advantage of the fact that for replay Xml, the default is to not inline.
                 // So we only need to emit Xml for the methods we want to inline. Since we're only
                 // inlining into one method, our forest just has one Method entry.
@@ -561,7 +571,7 @@ namespace PerformanceExplorer
                 kForest.Methods[0] = rootMethod.ShallowCopy();
 
                 Inline lastInline = 
-                    ExploreSubtree(kForest, endCount, rootMethod, benchmark, explorationResults);
+                    ExploreSubtree(kForest, endCount, rootMethod, benchmark, explorationResults, null);
 
                 bool fullyExplore = CheckResults(explorationResults, endCount, 0);
 
@@ -573,9 +583,12 @@ namespace PerformanceExplorer
                     for (int k = 1; k <= endCount; k++)
                     {
                         Inline lastInlineK = 
-                            ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults);
+                            ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults, recaptureResults);
                         ShowResults(explorationResults, k, k - 1, rootMethod, lastInlineK, deltas);
                     }
+
+                    // Save off results for later processing.
+                    recapturedData[rootMethod.getId()] = recaptureResults;
                 }
                 else
                 {
@@ -603,10 +616,70 @@ namespace PerformanceExplorer
                 Console.WriteLine("$$$ --- [{0,2:D2}] {1,12} -> {2,-12} {3,6:0.00}%",
                     dd.index, dd.rootMethod.Name, currentMethodName, dd.pctDelta);
             }
+
+            // Build integrated data model...
+            string dataModelName = String.Format("{0}-{1}-data-model.csv", benchmark.ShortName, endResults.Name);
+            string dataModelFileName = Path.Combine(Program.RESULTS_DIR, dataModelName);
+            bool hasHeader = false;
+            using (StreamWriter dataModelFile = File.CreateText(dataModelFileName))
+            {
+                foreach (Results[] resultsSet in recapturedData.Values)
+                {
+                    for (int i = 1; i < resultsSet.Length; i++)
+                    {
+                        Results rK = resultsSet[i];
+                        Results rKm1 = resultsSet[i - 1];
+
+                        if (rK == null || rKm1 == null)
+                        {
+                            continue;
+                        }
+
+                        // Load up the recapture xml
+                        XElement root = XElement.Load(rK.LogFile);
+
+                        // If we haven't yet emitted a header, do so now.
+                        if (!hasHeader)
+                        {
+                            // Look for the embedded inliner observation schema
+                            IEnumerable<XElement> schemas = from el in root.Descendants("DataSchema") select el;
+                            XElement schema = schemas.First();
+                            string schemaString = (string)schema;
+
+                            // Add on the performance data column headers
+                            schemaString += ",InstRetiredDelta,InstRetiredPct,Confidence";
+                            dataModelFile.WriteLine(schemaString);
+                            hasHeader = true;
+                        }
+
+                        // Find the embededed inline observation data
+                        IEnumerable<XElement> data = from el in root.Descendants("Data") select el;
+                        string dataString = (string)data.First();
+
+                        // How to handle data from multi-part benchmarks???
+                        // For now, iterate over the sub-parts and emit multiple records
+                        // (Might instead want to aggregate?)
+                        foreach (string subBench in rK.Performance.InstructionCount.Keys)
+                        {
+                            List<double> rKData = rK.Performance.InstructionCount[subBench];
+                            List<double> rKm1Data = rKm1.Performance.InstructionCount[subBench];
+
+                            double confidence = PerformanceData.Confidence(rKData, rKm1Data);
+                            double rKAvg = PerformanceData.Average(rKData);
+                            double rKm1Avg = PerformanceData.Average(rKm1Data);
+                            double change = rKAvg - rKm1Avg;
+                            double pctDiff = 100.0 * change / rKm1Avg;
+
+                            dataModelFile.WriteLine("{0},{1:0.00},{2:0.00}.{3:0.00}",
+                                dataString, change / (1000 * 1000), pctDiff, confidence);
+                        }
+                    }
+                }
+            }
         }
 
         Inline ExploreSubtree(InlineForest kForest, int k, Method rootMethod,
-            Benchmark benchmark, Results[] explorationResults)
+            Benchmark benchmark, Results[] explorationResults, Results[] recaptureResults)
         {
             // Build inline subtree for method with first K nodes and swap it into the tree.
             int index = 0;
@@ -641,15 +714,22 @@ namespace PerformanceExplorer
             Results resultsK = x.RunBenchmark(benchmark, c);
             explorationResults[k] = resultsK;
 
-            // Run test and recapture the inline XML along with observational data about the last inline
-            string retestName = String.Format("{0}-{1}-{2:X8}-{3}-data", benchmark.ShortName, endResults.Name, rootMethod.Token, k);
-            Configuration cr = new Configuration(retestName);
-            CoreClrRunner clr = new CoreClrRunner();
-            cr.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
-            cr.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
-            cr.Environment["COMPlus_JitInlineDumpXml"] = "1";
-            cr.Environment["COMPlus_JitInlineDumpData"] = "1";
-            Results ResultsClr = clr.RunBenchmark(benchmark, cr);
+            if (recaptureResults != null)
+            {
+                // Run test and recapture the inline XML along with observational data about the last inline
+                string retestName = String.Format("{0}-{1}-{2:X8}-{3}-data", benchmark.ShortName, endResults.Name, rootMethod.Token, k);
+                Configuration cr = new Configuration(retestName);
+                CoreClrRunner clr = new CoreClrRunner();
+                cr.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
+                cr.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
+                // Ask for "minimal" replay XML here
+                cr.Environment["COMPlus_JitInlineDumpXml"] = "2";
+                cr.Environment["COMPlus_JitInlineDumpData"] = "1";
+                Results resultsClr = clr.RunBenchmark(benchmark, cr);
+                // Snag performance data from above
+                resultsClr.Performance = resultsK.Performance;
+                recaptureResults[k] = resultsClr;
+            }
 
             return currentInline;
         }
@@ -1217,7 +1297,7 @@ namespace PerformanceExplorer
                 fullConfiguration.Environment["COMPlus_JitInlinePolicyFull"] = "1";
                 fullConfiguration.Environment["COMPlus_JitInlineDepth"] = "10";
                 fullConfiguration.Environment["COMPlus_JitInlineSize"] = "200";
-                fullConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
+                fullConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "2";
 
                 // Build an exclude string disabiling inlining in all the methods we've
                 // collected so far. If there are no methods yet, don't bother.
