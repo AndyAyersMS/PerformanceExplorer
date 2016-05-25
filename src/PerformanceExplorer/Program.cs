@@ -552,38 +552,16 @@ namespace PerformanceExplorer
                 Results[] explorationResults = new Results[endCount + 1];
                 explorationResults[0] = baseResults;
 
-                // Make a copy of the baseline inline forest.
-                int methodCount = baseResults.InlineForest.Methods.Length;
+                // We take advantage of the fact that for replay Xml, the default is to not inline.
+                // So we only need to emit Xml for the methods we want to inline. Since we're only
+                // inlining into one method, our forest just has one Method entry.
                 InlineForest kForest = new InlineForest();
                 kForest.Policy = "ReplayPolicy";
-                kForest.Methods = new Method[methodCount];
-                for (int kk = 0; kk < methodCount; kk++)
-                {
-                    kForest.Methods[kk] = baseResults.InlineForest.Methods[kk].ShallowCopy();
-                }
-
-                // Find the root method's index in the base forest.
-                int index = 0;
-                bool found = false;
-                foreach (Method baseMethod in baseResults.InlineForest.Methods)
-                {
-                    if (rootMethod.getId().Equals(baseMethod.getId()))
-                    {
-                        found = true;
-                        break;
-                    }
-
-                    index++;
-                }
-
-                if (!found)
-                {
-                    Console.WriteLine("$$$ Can't find root method in base method list, sorry");
-                    continue;
-                }
+                kForest.Methods = new Method[1];
+                kForest.Methods[0] = rootMethod.ShallowCopy();
 
                 Inline lastInline = 
-                    ExploreSubtree(kForest, index, endCount, rootMethod, benchmark, explorationResults);
+                    ExploreSubtree(kForest, endCount, rootMethod, benchmark, explorationResults);
 
                 bool fullyExplore = CheckResults(explorationResults, endCount, 0);
 
@@ -595,7 +573,7 @@ namespace PerformanceExplorer
                     for (int k = 1; k <= endCount; k++)
                     {
                         Inline lastInlineK = 
-                            ExploreSubtree(kForest, index, k, rootMethod, benchmark, explorationResults);
+                            ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults);
                         ShowResults(explorationResults, k, k - 1, rootMethod, lastInlineK, deltas);
                     }
                 }
@@ -627,10 +605,11 @@ namespace PerformanceExplorer
             }
         }
 
-        Inline ExploreSubtree(InlineForest kForest, int index, int k, Method rootMethod,
+        Inline ExploreSubtree(InlineForest kForest, int k, Method rootMethod,
             Benchmark benchmark, Results[] explorationResults)
         {
             // Build inline subtree for method with first K nodes and swap it into the tree.
+            int index = 0;
             Inline currentInline = null;
             Inline[] mkInlines = rootMethod.GetBfsSubtree(k, out currentInline);
 
