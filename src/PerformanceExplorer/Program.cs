@@ -491,6 +491,8 @@ namespace PerformanceExplorer
         public int index;
         public string subBench;
         public double confidence;
+        public bool hasPerCallDelta;
+        public double perCallDelta;
         public int CompareTo(InlineDelta other)
         {
             return -Math.Abs(pctDelta).CompareTo(Math.Abs(other.pctDelta));
@@ -571,8 +573,9 @@ namespace PerformanceExplorer
                 kForest.Methods = new Method[1];
                 kForest.Methods[0] = rootMethod.ShallowCopy();
 
+                ulong dontcare = 0;
                 Inline lastInline = 
-                    ExploreSubtree(kForest, endCount, rootMethod, benchmark, explorationResults, null, null);
+                    ExploreSubtree(kForest, endCount, rootMethod, benchmark, explorationResults, null, null, out dontcare);
 
                 // Keep track of the current call count for each method.
                 // Initial value is the base model's count.
@@ -587,13 +590,14 @@ namespace PerformanceExplorer
                 if (fullyExplore)
                 {
                     Console.WriteLine("$$$ Full subtree perf significant, exploring...");
-                    ShowResults(explorationResults, endCount, 0, rootMethod, lastInline, null);
+                    ShowResults(explorationResults, endCount, 0, rootMethod, lastInline, null, 0);
 
                     for (int k = 1; k <= endCount; k++)
                     {
+                        ulong ccDelta = 0;
                         Inline lastInlineK = 
-                            ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults, recaptureResults, callCounts);
-                        ShowResults(explorationResults, k, k - 1, rootMethod, lastInlineK, deltas);
+                            ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults, recaptureResults, callCounts, out ccDelta);
+                        ShowResults(explorationResults, k, k - 1, rootMethod, lastInlineK, deltas, ccDelta);
                     }
 
                     // Save off results for later processing.
@@ -622,8 +626,13 @@ namespace PerformanceExplorer
                         dd.inlineMethodId.Token, dd.inlineMethodId.Hash);
                 }
 
-                Console.WriteLine("$$$ --- [{0,2:D2}] {1,12} -> {2,-12} {3,6:0.00}%",
+                Console.Write("$$$ --- [{0,2:D2}] {1,12} -> {2,-12} {3,6:0.00}%",
                     dd.index, dd.rootMethod.Name, currentMethodName, dd.pctDelta);
+                if (dd.hasPerCallDelta)
+                {
+                    Console.Write("{0,6:0.00} pc", dd.perCallDelta);
+                }
+                Console.WriteLine();
             }
 
             // Build integrated data model...
@@ -739,8 +748,11 @@ namespace PerformanceExplorer
         }
 
         Inline ExploreSubtree(InlineForest kForest, int k, Method rootMethod,
-            Benchmark benchmark, Results[] explorationResults, Results[] recaptureResults, Dictionary<MethodId, ulong> callCounts)
+            Benchmark benchmark, Results[] explorationResults, Results[] recaptureResults, 
+            Dictionary<MethodId, ulong> callCounts, out ulong ccDelta)
         {
+            ccDelta = 0;
+
             // Build inline subtree for method with first K nodes and swap it into the tree.
             int index = 0;
             Inline currentInline = null;
@@ -829,6 +841,7 @@ namespace PerformanceExplorer
                                     callCounts[currentId] = count;
                                     Console.WriteLine("Call count for {0:X8}-{1:X8} went from {2} to {3}",
                                         token, hash, oldCount, count);
+                                    ccDelta = oldCount - count;
                                 }
                                 else
                                 {
@@ -850,6 +863,10 @@ namespace PerformanceExplorer
                     // Will just assume after result is zero.
                     Console.WriteLine("No call count entry for {0:X8}-{1:X8}. Assuming zero.",
                         currentId.Token, currentId.Hash);
+                    if (callCounts.ContainsKey(currentId))
+                    {
+                        ccDelta = callCounts[currentId];
+                    }
                     callCounts[currentId] = 0;
                 }
             }
@@ -899,7 +916,7 @@ namespace PerformanceExplorer
             return signficant;
         }
         void ShowResults(Results[] explorationResults, int diffIndex, int baseIndex, 
-            Method rootMethod, Inline currentInline, List<InlineDelta> deltas)
+            Method rootMethod, Inline currentInline, List<InlineDelta> deltas, ulong ccDelta)
         {
             Results zeroResults = explorationResults[0];
             Results baseResults = explorationResults[baseIndex];
@@ -959,10 +976,15 @@ namespace PerformanceExplorer
 
                 Console.WriteLine("$$$ Bench {0} root {1} index {2} inlining {3}",
                     subBench, rootMethod.Name, diffIndex, currentMethodName);
-                Console.WriteLine("$$$ current delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
+                Console.WriteLine("$$$ current delta {0:0.00} M instr ({1:0.00}%) confidence {2:0.00}",
                     change / (1000 * 1000), pctDiff, confidence);
-                Console.WriteLine("$$$ cumulat delta {0} M instr ({1:0.00}%) confidence {2:0.00}",
+                Console.WriteLine("$$$ cumulat delta {0:0.00} M instr ({1:0.00}%) confidence {2:0.00}",
                     change0 / (1000 * 1000), pctDiff0, confidence0);
+
+                if (ccDelta != 0)
+                {
+                    Console.WriteLine("$$$ current delta {0:0.00} instr per call", change / ccDelta );
+                }
 
                 if (deltas != null)
                 {
@@ -974,6 +996,11 @@ namespace PerformanceExplorer
                     d.index = diffIndex;
                     d.subBench = subBench;
                     d.confidence = confidence;
+                    if (ccDelta != 0)
+                    {
+                        d.hasPerCallDelta = true;
+                        d.perCallDelta = change / ccDelta;
+                    }
 
                     deltas.Add(d);
                 }
