@@ -621,10 +621,20 @@ namespace PerformanceExplorer
             string dataModelName = String.Format("{0}-{1}-data-model.csv", benchmark.ShortName, endResults.Name);
             string dataModelFileName = Path.Combine(Program.RESULTS_DIR, dataModelName);
             bool hasHeader = false;
+            char[] comma = new char[] { ',' };
             using (StreamWriter dataModelFile = File.CreateText(dataModelFileName))
             {
-                foreach (Results[] resultsSet in recapturedData.Values)
+                foreach (MethodId methodId in recapturedData.Keys)
                 {
+                    Results[] resultsSet = recapturedData[methodId];
+
+                    // resultsSet[0] is the noinline run. We don't have a <Data> entry
+                    // for it, but key column values are spilled into the inline Xml and
+                    // so deserialized into method entries.
+                    int baseMethodHotSize = (int) baseResults.Methods[methodId].HotSize;
+                    int baseMethodColdSize = (int) baseResults.Methods[methodId].ColdSize;
+                    int baseMethodJitTime = (int) baseResults.Methods[methodId].JitTime;
+
                     for (int i = 1; i < resultsSet.Length; i++)
                     {
                         Results rK = resultsSet[i];
@@ -638,23 +648,54 @@ namespace PerformanceExplorer
                         // Load up the recapture xml
                         XElement root = XElement.Load(rK.LogFile);
 
+                        // Look for the embedded inliner observation schema
+                        IEnumerable< XElement > schemas = from el in root.Descendants("DataSchema") select el;
+                        XElement schema = schemas.First();
+                        string schemaString = (string)schema;
+
                         // If we haven't yet emitted a header, do so now.
                         if (!hasHeader)
                         {
-                            // Look for the embedded inliner observation schema
-                            IEnumerable<XElement> schemas = from el in root.Descendants("DataSchema") select el;
-                            XElement schema = schemas.First();
-                            string schemaString = (string)schema;
-
                             // Add on the performance data column headers
-                            schemaString += ",InstRetiredDelta,InstRetiredPct,Confidence";
-                            dataModelFile.WriteLine(schemaString);
+                            string extendedSchemaString = schemaString + 
+                                ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct,Confidence";
+                            dataModelFile.WriteLine(extendedSchemaString);
                             hasHeader = true;
                         }
+
+                        // Figure out relative position of a few key columns
+                        string[] columnNames = schemaString.Split(comma);
+                        int hotSizeIndex = -1;
+                        int coldSizeIndex = -1;
+                        int jitTimeIndex = -1;
+                        int index = 0;
+                        foreach (string s in columnNames)
+                        {
+                            switch (s)
+                            {
+                                case "HotSize":
+                                    hotSizeIndex = index;
+                                    break;
+                                case "ColdSize":
+                                    coldSizeIndex = index;
+                                    break;
+                                case "JitTime":
+                                    jitTimeIndex = index;
+                                    break;
+                            }
+
+                            index++;
+                        }                   
 
                         // Find the embededed inline observation data
                         IEnumerable<XElement> data = from el in root.Descendants("Data") select el;
                         string dataString = (string)data.First();
+                            string[] dataStringX = dataString.Split(comma);
+
+                        // Split out the observations that we need for extended info.
+                        int currentMethodHotSize = hotSizeIndex >= 0 ? Int32.Parse(dataStringX[hotSizeIndex]) : 0;
+                        int currentMethodColdSize = coldSizeIndex >= 0 ? Int32.Parse(dataStringX[coldSizeIndex]) : 0;
+                        int currentMethodJitTime = jitTimeIndex >= 0 ? Int32.Parse(dataStringX[jitTimeIndex]) : 0;
 
                         // How to handle data from multi-part benchmarks???
                         // For now, iterate over the sub-parts and emit multiple records
@@ -670,9 +711,19 @@ namespace PerformanceExplorer
                             double change = rKAvg - rKm1Avg;
                             double pctDiff = 100.0 * change / rKm1Avg;
 
-                            dataModelFile.WriteLine("{0},{1:0.00},{2:0.00}.{3:0.00}",
-                                dataString, change / (1000 * 1000), pctDiff, confidence);
+                            int hotSizeDelta = currentMethodHotSize - baseMethodHotSize;
+                            int coldSizeDelta = currentMethodColdSize - baseMethodColdSize;
+                            int jitTimeDelta = currentMethodJitTime - baseMethodJitTime;
+
+                            dataModelFile.WriteLine("{0},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00}",
+                                dataString, 
+                                hotSizeDelta, coldSizeDelta, jitTimeDelta,
+                                change / (1000 * 1000), pctDiff, confidence);
                         }
+
+                        baseMethodHotSize = currentMethodHotSize;
+                        baseMethodColdSize = currentMethodColdSize;
+                        baseMethodJitTime = currentMethodJitTime;
                     }
                 }
             }
