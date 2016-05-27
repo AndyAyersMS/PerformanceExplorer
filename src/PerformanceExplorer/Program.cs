@@ -314,6 +314,7 @@ namespace PerformanceExplorer
         public uint SizeEstimate;
         public uint TimeEstimate;
         public Inline[] Inlines;
+        public ulong CallCount;
         public void MarkAsDuplicate() { IsDuplicate = true; }
         public bool CheckIsDuplicate() { return IsDuplicate; }
         private bool IsDuplicate;
@@ -571,7 +572,15 @@ namespace PerformanceExplorer
                 kForest.Methods[0] = rootMethod.ShallowCopy();
 
                 Inline lastInline = 
-                    ExploreSubtree(kForest, endCount, rootMethod, benchmark, explorationResults, null);
+                    ExploreSubtree(kForest, endCount, rootMethod, benchmark, explorationResults, null, null);
+
+                // Keep track of the current call count for each method.
+                // Initial value is the base model's count.
+                Dictionary<MethodId, ulong> callCounts = new Dictionary<MethodId, ulong>(baseResults.Methods.Count());
+                foreach (MethodId id in baseResults.Methods.Keys)
+                {
+                    callCounts[id] = baseResults.Methods[id].CallCount;
+                }
 
                 bool fullyExplore = CheckResults(explorationResults, endCount, 0);
 
@@ -583,7 +592,7 @@ namespace PerformanceExplorer
                     for (int k = 1; k <= endCount; k++)
                     {
                         Inline lastInlineK = 
-                            ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults, recaptureResults);
+                            ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults, recaptureResults, callCounts);
                         ShowResults(explorationResults, k, k - 1, rootMethod, lastInlineK, deltas);
                     }
 
@@ -730,7 +739,7 @@ namespace PerformanceExplorer
         }
 
         Inline ExploreSubtree(InlineForest kForest, int k, Method rootMethod,
-            Benchmark benchmark, Results[] explorationResults, Results[] recaptureResults)
+            Benchmark benchmark, Results[] explorationResults, Results[] recaptureResults, Dictionary<MethodId, ulong> callCounts)
         {
             // Build inline subtree for method with first K nodes and swap it into the tree.
             int index = 0;
@@ -780,6 +789,69 @@ namespace PerformanceExplorer
                 // Snag performance data from above
                 resultsClr.Performance = resultsK.Performance;
                 recaptureResults[k] = resultsClr;
+            }
+
+            // Run and capture method call counts
+            if (Program.CaptureCallCounts && callCounts != null)
+            {
+                string callCountName = String.Format("{0}-{1}-{2:X8}-{3}-cc", benchmark.ShortName, endResults.Name, rootMethod.Token, k);
+                Configuration cc = new Configuration(callCountName);
+                CoreClrRunner clr = new CoreClrRunner();
+                cc.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
+                cc.Environment["COMPlus_JitInlineReplayFile"] = replayFileName;
+                // Ask for method entry instrumentation
+                cc.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
+                Results resultsCC = clr.RunBenchmark(benchmark, cc);
+
+                MethodId currentId = currentInline.GetMethodId();
+                bool foundcc = false;
+                // Parse results back and find call count for the current inline.
+                using (StreamReader callCountStream = File.OpenText(resultsCC.LogFile))
+                {
+                    string callCountLine = callCountStream.ReadLine();
+                    while (callCountLine != null)
+                    {
+                        string[] callCountFields = callCountLine.Split(new char[] { ',' });
+                        if (callCountFields.Length == 3)
+                        {
+                            uint token = UInt32.Parse(callCountFields[0], System.Globalization.NumberStyles.HexNumber);
+                            uint hash = UInt32.Parse(callCountFields[1], System.Globalization.NumberStyles.HexNumber);
+                            ulong count = UInt64.Parse(callCountFields[2]);
+
+                            if (token == currentId.Token && hash == currentId.Hash)
+                            {
+                                foundcc = true;
+
+                                if (callCounts.ContainsKey(currentId))
+                                {
+                                    // Note we expect it not to increase!
+                                    ulong oldCount = callCounts[currentId];
+                                    callCounts[currentId] = count;
+                                    Console.WriteLine("Call count for {0:X8}-{1:X8} went from {2} to {3}",
+                                        token, hash, oldCount, count);
+                                }
+                                else
+                                {
+                                    // Don't really expect to hit this.. we'll never see this method as a root.
+                                    Console.WriteLine("Call count for {0:X8}-{1:X8} went from {2} to {3}",
+                                        token, hash, "unknown", count);
+                                }
+                                break;
+                            }
+                        }
+
+                        callCountLine = callCountStream.ReadLine();
+                    }
+                }
+
+                if (!foundcc)
+                {
+                    // Note if the method is never called we may not have an entry!
+                    // Will just assume after result is zero.
+                    Console.WriteLine("No call count entry for {0:X8}-{1:X8}. Assuming zero.",
+                        currentId.Token, currentId.Hash);
+                    callCounts[currentId] = 0;
+                }
             }
 
             return currentInline;
@@ -1246,6 +1318,41 @@ namespace PerformanceExplorer
 
             results.Performance.Print(noInlineConfig.Name);
 
+            // Get noinline method call counts
+            Configuration noInlineCallCountConfig = new Configuration("noinline-cc");
+            noInlineCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
+            noInlineCallCountConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
+            noInlineCallCountConfig.Environment["COMPlus_JitInlineLimit"] = "0";
+            noInlineCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
+            Results ccResults = r.RunBenchmark(b, noInlineCallCountConfig);
+
+            // Parse results back and annotate base method set
+            using (StreamReader callCountStream = File.OpenText(ccResults.LogFile))
+            {
+                string callCountLine = callCountStream.ReadLine();
+                while (callCountLine != null)
+                {
+                    string[] callCountFields = callCountLine.Split(new char[] { ',' });
+                    if (callCountFields.Length == 3)
+                    {
+                        uint token = UInt32.Parse(callCountFields[0], System.Globalization.NumberStyles.HexNumber);
+                        uint hash = UInt32.Parse(callCountFields[1], System.Globalization.NumberStyles.HexNumber);
+                        ulong count = UInt64.Parse(callCountFields[2]);
+
+                        MethodId id = new MethodId();
+                        id.Hash = hash;
+                        id.Token = token;
+
+                        Method m = results.Methods[id];
+                        m.CallCount = count;
+
+                        Console.WriteLine("{0} called {1} times", m.Name, count);
+                    }
+
+                    callCountLine = callCountStream.ReadLine();
+                }
+            }
+
             return results;
         }
 
@@ -1596,6 +1703,7 @@ namespace PerformanceExplorer
         public static bool UseModelModel = false;
         public static bool UseSizeModel = false;
         public static bool ExploreInlines = true;
+        public static bool CaptureCallCounts = true;
 
         public static int Main(string[] args)
         {
