@@ -491,6 +491,8 @@ namespace PerformanceExplorer
         public int index;
         public string subBench;
         public double confidence;
+        public double instructionsDelta;
+        public double callsDelta;
         public bool hasPerCallDelta;
         public double perCallDelta;
         public int CompareTo(InlineDelta other)
@@ -630,7 +632,7 @@ namespace PerformanceExplorer
                     dd.index, dd.rootMethod.Name, currentMethodName, dd.pctDelta);
                 if (dd.hasPerCallDelta)
                 {
-                    Console.Write("{0,6:0.00} pc", dd.perCallDelta);
+                    Console.Write("{0,10:0.00} pc", dd.perCallDelta);
                 }
                 Console.WriteLine();
             }
@@ -996,10 +998,12 @@ namespace PerformanceExplorer
                     d.index = diffIndex;
                     d.subBench = subBench;
                     d.confidence = confidence;
+                    d.instructionsDelta = change;
                     if (ccDelta != 0)
                     {
                         d.hasPerCallDelta = true;
                         d.perCallDelta = change / ccDelta;
+                        d.callsDelta = ccDelta;
                     }
 
                     deltas.Add(d);
@@ -1430,6 +1434,39 @@ namespace PerformanceExplorer
             }
 
             legacyResults.Performance.Print(legacyConfig.Name);
+
+            // Get legacy method call counts
+            Configuration legacyCallCountConfig = new Configuration("legacy-cc");
+            legacyCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
+            legacyCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
+            Results ccResults = r.RunBenchmark(b, legacyCallCountConfig);
+
+            // Parse results back and annotate base method set
+            using (StreamReader callCountStream = File.OpenText(ccResults.LogFile))
+            {
+                string callCountLine = callCountStream.ReadLine();
+                while (callCountLine != null)
+                {
+                    string[] callCountFields = callCountLine.Split(new char[] { ',' });
+                    if (callCountFields.Length == 3)
+                    {
+                        uint token = UInt32.Parse(callCountFields[0], System.Globalization.NumberStyles.HexNumber);
+                        uint hash = UInt32.Parse(callCountFields[1], System.Globalization.NumberStyles.HexNumber);
+                        ulong count = UInt64.Parse(callCountFields[2]);
+
+                        MethodId id = new MethodId();
+                        id.Hash = hash;
+                        id.Token = token;
+
+                        Method m = legacyResults.Methods[id];
+                        m.CallCount = count;
+
+                        Console.WriteLine("{0} called {1} times", m.Name, count);
+                    }
+
+                    callCountLine = callCountStream.ReadLine();
+                }
+            }
 
             return legacyResults;
         }
