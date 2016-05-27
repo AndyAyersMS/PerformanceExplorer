@@ -501,11 +501,18 @@ namespace PerformanceExplorer
         }
     }
 
-    public class Exploration
+    public class Exploration : IComparable<Exploration>
     {
         public Results baseResults;
         public Results endResults;
         public Benchmark benchmark;
+
+        // Consider benchmarks with fewer roots as better
+        // candidates for exploration.
+        public int CompareTo(Exploration other)
+        {
+            return endResults.Methods.Count() - other.endResults.Methods.Count();
+        }
 
         public void Explore(StreamWriter combinedDataFile, ref bool combinedHasHeader)
         {
@@ -535,7 +542,12 @@ namespace PerformanceExplorer
             }
             Console.WriteLine("$$$ Examining {0} methods, {1} inline combinations", candidateCount, exploreCount);
 
-            // Explore each method with inlines.
+            // Todo: order methods by call count. Find top N% of these. Determine callers (and up the tree)
+            // Explore from there.
+
+            // Explore each method with inlines. Arbitrarily bail after some number of explorations.
+            int methodsExplored = 0;
+            int LIMIT = 5;
             foreach (Method rootMethod in endResults.Methods.Values)
             {
                 int endCount = (int) rootMethod.InlineCount;
@@ -551,6 +563,13 @@ namespace PerformanceExplorer
                 if (rootMethod.Name.Equals("Main"))
                 {
                     continue;
+                }
+
+                methodsExplored++;
+                if (methodsExplored > LIMIT)
+                {
+                    Console.WriteLine("$$$ {0}: Explored {1} roots, moving on to next benchmark", benchmark.ShortName, LIMIT);
+                    break;
                 }
 
                 // Noinline perf is already "known" from the baseline, so exclude that here.
