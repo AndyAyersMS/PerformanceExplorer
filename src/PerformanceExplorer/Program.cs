@@ -518,6 +518,9 @@ namespace PerformanceExplorer
             // Fully detailed result trees with performance data
             Dictionary<MethodId, Results[]> recapturedData = new Dictionary<MethodId, Results[]>();
 
+            // Similar but for call count reductions....
+            Dictionary<MethodId, List<double>> recapturedCC = new Dictionary<MethodId, List<double>>();
+
             // Count methods in end results with inlines, and total subtree size.
             int candidateCount = 0;
             int exploreCount = 0;
@@ -540,6 +543,13 @@ namespace PerformanceExplorer
                 if (endCount == 0)
                 {
                     // No inlines, so move on to next method.
+                    continue;
+                }
+
+                // Don't bother exploring main since it won't be invoked via xperf
+                // and so any apparen call count reductions from main will be misleading.
+                if (rootMethod.Name.Equals("Main"))
+                {
                     continue;
                 }
 
@@ -567,6 +577,9 @@ namespace PerformanceExplorer
                 Results[] recaptureResults = new Results[endCount + 1];
                 recaptureResults[0] = baseResults;
 
+                // Call count reduction at each step of the tree expansion
+                List<double> ccDeltas = new List<double>();
+
                 // We take advantage of the fact that for replay Xml, the default is to not inline.
                 // So we only need to emit Xml for the methods we want to inline. Since we're only
                 // inlining into one method, our forest just has one Method entry.
@@ -593,6 +606,7 @@ namespace PerformanceExplorer
                 {
                     Console.WriteLine("$$$ Full subtree perf significant, exploring...");
                     ShowResults(explorationResults, endCount, 0, rootMethod, lastInline, null, 0);
+                    ccDeltas.Add(0);
 
                     for (int k = 1; k <= endCount; k++)
                     {
@@ -600,10 +614,12 @@ namespace PerformanceExplorer
                         Inline lastInlineK = 
                             ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults, recaptureResults, callCounts, out ccDelta);
                         ShowResults(explorationResults, k, k - 1, rootMethod, lastInlineK, deltas, ccDelta);
+                        ccDeltas.Add(ccDelta);
                     }
 
                     // Save off results for later processing.
                     recapturedData[rootMethod.getId()] = recaptureResults;
+                    recapturedCC[rootMethod.getId()] = ccDeltas;
                 }
                 else
                 {
@@ -632,7 +648,7 @@ namespace PerformanceExplorer
                     dd.index, dd.rootMethod.Name, currentMethodName, dd.pctDelta);
                 if (dd.hasPerCallDelta)
                 {
-                    Console.Write("{0,10:0.00} pc", dd.perCallDelta);
+                    Console.Write(" {0,10:0.00} pc", dd.perCallDelta);
                 }
                 Console.WriteLine();
             }
@@ -647,6 +663,7 @@ namespace PerformanceExplorer
                 foreach (MethodId methodId in recapturedData.Keys)
                 {
                     Results[] resultsSet = recapturedData[methodId];
+                    List<double> ccDeltas = recapturedCC[methodId];
 
                     // resultsSet[0] is the noinline run. We don't have a <Data> entry
                     // for it, but key column values are spilled into the inline Xml and
@@ -678,7 +695,7 @@ namespace PerformanceExplorer
                         {
                             // Add on the performance data column headers
                             string extendedSchemaString = schemaString + 
-                                ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct,Confidence";
+                                ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct,InstRetiredPerCallDelta,Confidence";
                             dataModelFile.WriteLine(extendedSchemaString);
                             hasHeader = true;
                         }
@@ -716,6 +733,7 @@ namespace PerformanceExplorer
                         int currentMethodHotSize = hotSizeIndex >= 0 ? Int32.Parse(dataStringX[hotSizeIndex]) : 0;
                         int currentMethodColdSize = coldSizeIndex >= 0 ? Int32.Parse(dataStringX[coldSizeIndex]) : 0;
                         int currentMethodJitTime = jitTimeIndex >= 0 ? Int32.Parse(dataStringX[jitTimeIndex]) : 0;
+                        double currentCCDelta = ccDeltas[i];
 
                         // How to handle data from multi-part benchmarks???
                         // For now, iterate over the sub-parts and emit multiple records
@@ -730,15 +748,17 @@ namespace PerformanceExplorer
                             double rKm1Avg = PerformanceData.Average(rKm1Data);
                             double change = rKAvg - rKm1Avg;
                             double pctDiff = 100.0 * change / rKm1Avg;
+                            // Number of instructions saved per call to the current inlinee
+                            double perCallDelta = (currentCCDelta == 0) ? 0 : change / currentCCDelta;
 
                             int hotSizeDelta = currentMethodHotSize - baseMethodHotSize;
                             int coldSizeDelta = currentMethodColdSize - baseMethodColdSize;
                             int jitTimeDelta = currentMethodJitTime - baseMethodJitTime;
 
-                            dataModelFile.WriteLine("{0},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00}",
+                            dataModelFile.WriteLine("{0},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00},{7:0.00}",
                                 dataString, 
                                 hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                                change / (1000 * 1000), pctDiff, confidence);
+                                change / (1000 * 1000), pctDiff, perCallDelta, confidence);
                         }
 
                         baseMethodHotSize = currentMethodHotSize;
@@ -1016,7 +1036,6 @@ namespace PerformanceExplorer
     public abstract class Runner
     {
         public abstract Results RunBenchmark(Benchmark b, Configuration c);
-        public abstract int Iterations();
     }
 
     public class CoreClrRunner : Runner
@@ -1077,11 +1096,6 @@ namespace PerformanceExplorer
             timeData.Add(runnerProcess.ExitTime.Subtract(runnerProcess.StartTime).TotalMilliseconds);
             results.Performance.ExecutionTime[b.ShortName] = timeData;
             return results;
-        }
-
-        public override int Iterations()
-        {
-            return 1;
         }
 
         private string runnerExe;
@@ -1233,11 +1247,6 @@ namespace PerformanceExplorer
             return results;
         }
 
-        public override int Iterations()
-        {
-            return 1;
-        }
-
         static string sandboxDir = Program.SANDBOX_DIR;
         static string coreclrRoot = Program.CORECLR_ROOT;
         static string testOverlayRoot = Path.Combine(coreclrRoot, @"bin\tests\Windows_NT.x64.Release\tests\Core_Root");
@@ -1334,22 +1343,17 @@ namespace PerformanceExplorer
             }
 
             // Get noinline perf numbers
-
-            for (int i = 0; i < x.Iterations(); i++)
-            {
-                Configuration noinlinePerfConfig = new Configuration("noinline-perf-" + i);
-                noinlinePerfConfig.ResultsDirectory = Program.RESULTS_DIR;
-                noinlinePerfConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
-                noinlinePerfConfig.Environment["COMPlus_JitInlineLimit"] = "0";
-                Results perfResults = x.RunBenchmark(b, noinlinePerfConfig);
-
-                // Should really "merge" the times here.
-                results.Performance= perfResults.Performance;
-            }
-
+            Configuration noinlinePerfConfig = new Configuration("noinline-perf");
+            noinlinePerfConfig.ResultsDirectory = Program.RESULTS_DIR;
+            noinlinePerfConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
+            noinlinePerfConfig.Environment["COMPlus_JitInlineLimit"] = "0";
+            Results perfResults = x.RunBenchmark(b, noinlinePerfConfig);
+            results.Performance = perfResults.Performance;
             results.Performance.Print(noInlineConfig.Name);
 
             // Get noinline method call counts
+            // Todo: use xunit runner and capture stderr? Downside is that xunit-perf
+            // entry points won't be in the baseline method set.
             Configuration noInlineCallCountConfig = new Configuration("noinline-cc");
             noInlineCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
             noInlineCallCountConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
@@ -1425,14 +1429,10 @@ namespace PerformanceExplorer
             legacyResults.Methods = methods;
 
             // Now get legacy perf numbers
-            for (int i = 0; i < x.Iterations(); i++)
-            {
-                Configuration legacyPerfConfig = new Configuration("legacy-perf-" + i);
-                legacyPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
-                Results perfResults = x.RunBenchmark(b, legacyPerfConfig);
-                legacyResults.Performance = perfResults.Performance;
-            }
-
+            Configuration legacyPerfConfig = new Configuration("legacy-perf");
+            legacyPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
+            Results perfResults = x.RunBenchmark(b, legacyPerfConfig);
+            legacyResults.Performance = perfResults.Performance;
             legacyResults.Performance.Print(legacyConfig.Name);
 
             // Get legacy method call counts
@@ -1638,17 +1638,13 @@ namespace PerformanceExplorer
             xo.Serialize(xmlOutFile, fullForest);
 
             // Now get full perf numbers -- just for the initial set
-            for (int i = 0; i < x.Iterations(); i++)
-            {
-                Configuration fullPerfConfig = new Configuration("full-perf-" + i);
-                fullPerfConfig.Environment["COMPlus_JitInlinePolicyFull"] = "1";
-                fullPerfConfig.Environment["COMPlus_JitInlineDepth"] = "10";
-                fullPerfConfig.Environment["COMPlus_JitInlineSize"] = "200";
-                fullPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
-                Results perfResults = x.RunBenchmark(b, fullPerfConfig);
-                fullResults.Performance = perfResults.Performance;
-            }
-
+            Configuration fullPerfConfig = new Configuration("full-perf");
+            fullPerfConfig.Environment["COMPlus_JitInlinePolicyFull"] = "1";
+            fullPerfConfig.Environment["COMPlus_JitInlineDepth"] = "10";
+            fullPerfConfig.Environment["COMPlus_JitInlineSize"] = "200";
+            fullPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
+            Results perfResults = x.RunBenchmark(b, fullPerfConfig);
+            fullResults.Performance = perfResults.Performance;
             fullResults.Performance.Print("full");
 
             return fullResults;
@@ -1684,15 +1680,11 @@ namespace PerformanceExplorer
             results.InlineForest = f;
 
             // Now get perf numbers
-            for (int i = 0; i < x.Iterations(); i++)
-            {
-                Configuration modelPerfConfig = new Configuration("model-perf-" + i);
-                modelPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
-                modelPerfConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
-                Results perfResults = x.RunBenchmark(b, modelPerfConfig);
-                results.Performance = perfResults.Performance;
-            }
-
+            Configuration modelPerfConfig = new Configuration("model-perf");
+            modelPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
+            modelPerfConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
+            Results perfResults = x.RunBenchmark(b, modelPerfConfig);
+            results.Performance = perfResults.Performance;
             results.Performance.Print(modelConfig.Name);
 
             return results;
@@ -1727,15 +1719,11 @@ namespace PerformanceExplorer
             results.InlineForest = f;
 
             // Now get perf numbers
-            for (int i = 0; i < x.Iterations(); i++)
-            {
-                Configuration sizePerfConfig = new Configuration("size-perf-" + i);
-                sizePerfConfig.ResultsDirectory = Program.RESULTS_DIR;
-                sizePerfConfig.Environment["COMPlus_JitInlinePolicySize"] = "1";
-                Results perfResults = x.RunBenchmark(b, sizePerfConfig);
-                results.Performance = perfResults.Performance;
-            }
-
+            Configuration sizePerfConfig = new Configuration("size-perf");
+            sizePerfConfig.ResultsDirectory = Program.RESULTS_DIR;
+            sizePerfConfig.Environment["COMPlus_JitInlinePolicySize"] = "1";
+            Results perfResults = x.RunBenchmark(b, sizePerfConfig);
+            results.Performance = perfResults.Performance;
             results.Performance.Print(sizeConfig.Name);
 
             return results;
