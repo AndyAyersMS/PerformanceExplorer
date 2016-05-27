@@ -507,7 +507,7 @@ namespace PerformanceExplorer
         public Results endResults;
         public Benchmark benchmark;
 
-        public void Explore()
+        public void Explore(StreamWriter combinedDataFile, ref bool combinedHasHeader)
         {
             Console.WriteLine("$$$ Exploring significant perf diff in {0} between {1} and {2}",
                 benchmark.ShortName, baseResults.Name, endResults.Name);
@@ -689,15 +689,22 @@ namespace PerformanceExplorer
                         IEnumerable< XElement > schemas = from el in root.Descendants("DataSchema") select el;
                         XElement schema = schemas.First();
                         string schemaString = (string)schema;
+                        // Add on the performance data column headers
+                        string extendedSchemaString = schemaString +
+                            ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct,InstRetiredPerCallDelta,Confidence";
 
-                        // If we haven't yet emitted a header, do so now.
+                        // If we haven't yet emitted a local header, do so now.
                         if (!hasHeader)
                         {
-                            // Add on the performance data column headers
-                            string extendedSchemaString = schemaString + 
-                                ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct,InstRetiredPerCallDelta,Confidence";
                             dataModelFile.WriteLine(extendedSchemaString);
                             hasHeader = true;
+                        }
+
+                        // Similarly for the combined data file
+                        if (!combinedHasHeader)
+                        {
+                            combinedDataFile.WriteLine(extendedSchemaString);
+                            combinedHasHeader = true;
                         }
 
                         // Figure out relative position of a few key columns
@@ -757,6 +764,11 @@ namespace PerformanceExplorer
 
                             dataModelFile.WriteLine("{0},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00},{7:0.00}",
                                 dataString, 
+                                hotSizeDelta, coldSizeDelta, jitTimeDelta,
+                                change / (1000 * 1000), pctDiff, perCallDelta, confidence);
+
+                            combinedDataFile.WriteLine("{0},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00},{7:0.00}",
+                                dataString,
                                 hotSizeDelta, coldSizeDelta, jitTimeDelta,
                                 change / (1000 * 1000), pctDiff, perCallDelta, confidence);
                         }
@@ -1818,6 +1830,16 @@ namespace PerformanceExplorer
             Runner r = new CoreClrRunner();
             Runner x = new XunitPerfRunner();
 
+            // Build integrated data model...
+            string dataModelName = "All-Benchmark-data-model.csv";
+            string dataModelFileName = Path.Combine(Program.RESULTS_DIR, dataModelName);
+            bool hasHeader = false;
+            StreamWriter dataModelFile = null;
+            if (ExploreInlines)
+            {
+                dataModelFile = File.CreateText(dataModelFileName);
+            }
+
             foreach (string s in benchmarksToRun)
             {
                 List<Results> allResults = new List<Results>();
@@ -1907,8 +1929,10 @@ namespace PerformanceExplorer
 
                     foreach (Exploration e in thingsToExplore)
                     {
-                        e.Explore();
+                        e.Explore(dataModelFile, ref hasHeader);
                     }
+
+                    dataModelFile.Flush();
                 }
             }
 
