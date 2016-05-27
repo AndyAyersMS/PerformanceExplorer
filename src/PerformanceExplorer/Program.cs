@@ -547,7 +547,7 @@ namespace PerformanceExplorer
 
             // Explore each method with inlines. Arbitrarily bail after some number of explorations.
             int methodsExplored = 0;
-            int LIMIT = 5;
+            int LIMIT = 100;
             foreach (Method rootMethod in endResults.Methods.Values)
             {
                 int endCount = (int) rootMethod.InlineCount;
