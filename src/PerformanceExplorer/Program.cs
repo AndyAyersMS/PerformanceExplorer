@@ -1409,12 +1409,17 @@ namespace PerformanceExplorer
                         id.Hash = hash;
                         id.Token = token;
 
-                        Method m = results.Methods[id];
-                        m.CallCount = count;
-
-                        Console.WriteLine("{0} called {1} times", m.Name, count);
+                        if (results.Methods.ContainsKey(id))
+                        {
+                            Method m = results.Methods[id];
+                            m.CallCount = count;
+                            Console.WriteLine("{0} called {1} times", m.Name, count);
+                        }
+                        else
+                        {
+                            Console.WriteLine("{0:X8} {1:X8} called {2} times, but is not in base set?", token, hash, count);
+                        }
                     }
-
                     callCountLine = callCountStream.ReadLine();
                 }
             }
@@ -1489,10 +1494,16 @@ namespace PerformanceExplorer
                         id.Hash = hash;
                         id.Token = token;
 
-                        Method m = legacyResults.Methods[id];
-                        m.CallCount = count;
-
-                        Console.WriteLine("{0} called {1} times", m.Name, count);
+                        if (legacyResults.Methods.ContainsKey(id))
+                        {
+                            Method m = legacyResults.Methods[id];
+                            m.CallCount = count;
+                            Console.WriteLine("{0} called {1} times", m.Name, count);
+                        }
+                        else
+                        {
+                            Console.WriteLine("{0:X8} {1:X8} called {2} times, but is not in legacy set?", token, hash, count);
+                        }
                     }
 
                     callCountLine = callCountStream.ReadLine();
@@ -1951,7 +1962,7 @@ namespace PerformanceExplorer
                         e.Explore(dataModelFile, ref hasHeader);
                     }
 
-                    dataModelFile.Flush();
+                    // dataModelFile.Flush();
                 }
             }
 
