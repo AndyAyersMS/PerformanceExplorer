@@ -13,7 +13,7 @@ namespace PerformanceExplorer
     // used to perform a particular run.
     public class Configuration
     {
-        public static bool DisableZap = true;
+        public static bool DisableZap = false;
 
         public Configuration(string name)
         {
@@ -84,7 +84,6 @@ namespace PerformanceExplorer
 
             return data.Average();
         }
-
         public static double StdDeviation(List<double> data)
         {
             if (data.Count() < 2)
@@ -585,7 +584,7 @@ namespace PerformanceExplorer
                 }
 
                 // Don't bother exploring main since it won't be invoked via xperf
-                // and so any apparen call count reductions from main will be misleading.
+                // and so any apparent call count reductions from main will be misleading.
                 if (rootMethod.Name.Equals("Main"))
                 {
                     continue;
@@ -594,7 +593,8 @@ namespace PerformanceExplorer
                 methodsExplored++;
                 if (methodsExplored > methodExplorationLimit)
                 {
-                    Console.WriteLine("$$$ {0}: Explored {1} roots, moving on to next benchmark", benchmark.ShortName, methodExplorationLimit);
+                    Console.WriteLine("$$$ {0}: Explored {1} roots, moving on to next benchmark", 
+                        benchmark.ShortName, methodExplorationLimit);
                     break;
                 }
 
@@ -665,6 +665,7 @@ namespace PerformanceExplorer
                         if (inlinesExplored > inlineExporationLimit)
                         {
                             Console.WriteLine("$$$ Hit limit of {0} inlines explored, moving on", inlineExporationLimit);
+                            break;
                         }
 
                         ulong ccDelta = 0;
@@ -1822,12 +1823,13 @@ namespace PerformanceExplorer
 
         // Paths to repos and binaries. 
         // Todo: Make this configurable.
-        public static string CORECLR_ROOT = @"d:\repos\coreclr";
-        public static string CORECLR_BENCHMARK_ROOT = @"d:\repos\coreclr\bin\tests\Windows_NT.x64.Release\JIT\performance\codequality";
-        public static string CORERUN = @"d:\repos\coreclr\bin\tests\Windows_NT.x64.release\tests\Core_Root\corerun.exe";
+        public static string REPO_ROOT = @"c:\repos";
+        public static string CORECLR_ROOT = REPO_ROOT + @"\coreclr";
+        public static string CORECLR_BENCHMARK_ROOT = CORECLR_ROOT + @"\bin\tests\Windows_NT.x64.Release\JIT\performance\codequality";
+        public static string CORERUN = CORECLR_ROOT +  @"\bin\tests\Windows_NT.x64.release\tests\Core_Root\corerun.exe";
         public static string SHELL = @"c:\windows\system32\cmd.exe";
-        public static string RESULTS_DIR = @"d:\repos\PerformanceExplorer\results";
-        public static string SANDBOX_DIR = @"d:\repos\PerformanceExplorer\sandbox";
+        public static string RESULTS_DIR = REPO_ROOT + @"\PerformanceExplorer\results";
+        public static string SANDBOX_DIR = REPO_ROOT + @"\PerformanceExplorer\sandbox";
 
         // Various aspects of the exploration that can be enabled/disabled.
         // Todo: Make this configurable.
@@ -2049,6 +2051,7 @@ namespace PerformanceExplorer
 
             // See if any of the results are both significantly different than noinline
             // and measured with high confidence.
+            bool added = false;
             foreach (string subBench in baseline.Performance.InstructionCount.Keys)
             {
                 List<double> baseData = baseline.Performance.InstructionCount[subBench];
@@ -2075,7 +2078,7 @@ namespace PerformanceExplorer
                     string confidentVerb = confident ? "and is" : "and is not";
                     bool show = interesting && confident;
 
-                    if (interesting && confident)
+                    if (!added & interesting && confident)
                     {
                         // Set up exploration of this performance diff (specify sub-bench?)
                         Exploration e = new Exploration();
@@ -2083,6 +2086,7 @@ namespace PerformanceExplorer
                         e.endResults = diff;
                         e.benchmark = b;
                         interestingResults.Add(e);
+                        added = true;
                     }
 
                     if (!show)
