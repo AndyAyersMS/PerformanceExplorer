@@ -13,7 +13,7 @@ namespace PerformanceExplorer
     // used to perform a particular run.
     public class Configuration
     {
-        public static bool DisableZap = false;
+        public static bool DisableZap = true;
 
         public Configuration(string name)
         {
@@ -223,6 +223,27 @@ namespace PerformanceExplorer
             id.Token = Token;
             id.Hash = Hash;
             return id;
+        }
+
+        public static int HasMoreInlines(Method x, Method y)
+        {
+            return (int) y.InlineCount - (int) x.InlineCount;
+        }
+
+        public static int HasMoreCalls(Method x, Method y)
+        {
+            if (x.CallCount > y.CallCount)
+            {
+                return -1;
+            }
+            else if (x.CallCount < y.CallCount)
+            {
+                return 1;
+            }
+            else
+            {
+                return 0;
+            }
         }
 
         public double NumSubtrees()
@@ -547,8 +568,13 @@ namespace PerformanceExplorer
 
             // Explore each method with inlines. Arbitrarily bail after some number of explorations.
             int methodsExplored = 0;
-            int LIMIT = 100;
-            foreach (Method rootMethod in endResults.Methods.Values)
+            int inlinesExplored = 0;
+            int methodExplorationLimit = 100;
+            int inlineExporationLimit = 500;
+            List<Method> methodsToExplore = new List<Method>(endResults.Methods.Values);
+            methodsToExplore.Sort(Method.HasMoreCalls);
+
+            foreach (Method rootMethod in methodsToExplore)
             {
                 int endCount = (int) rootMethod.InlineCount;
 
@@ -566,9 +592,14 @@ namespace PerformanceExplorer
                 }
 
                 methodsExplored++;
-                if (methodsExplored > LIMIT)
+                if (methodsExplored > methodExplorationLimit)
                 {
-                    Console.WriteLine("$$$ {0}: Explored {1} roots, moving on to next benchmark", benchmark.ShortName, LIMIT);
+                    Console.WriteLine("$$$ {0}: Explored {1} roots, moving on to next benchmark", benchmark.ShortName, methodExplorationLimit);
+                    break;
+                }
+
+                if (inlinesExplored > inlineExporationLimit)
+                {
                     break;
                 }
 
@@ -576,8 +607,8 @@ namespace PerformanceExplorer
                 //
                 // The maximal subtree perf may not equal the end perf because the latter allows inlines
                 // in all methods, and we're just inlining into one method at a time here.
-                Console.WriteLine("$$$ examining method {0} {1:X8} with {2} inlines and {3} permutations via BFS.",
-                    rootMethod.Name, rootMethod.Token, endCount, rootMethod.NumSubtrees() - 1);
+                Console.WriteLine("$$$ [{0}] examining method {1} {2:X8} with {3} inlines and {4} permutations via BFS.",
+                methodsExplored, rootMethod.Name, rootMethod.Token, endCount, rootMethod.NumSubtrees() - 1);
                 rootMethod.Dump();
 
                 // Now for the actual experiment. We're going to grow the method's inline tree from the
@@ -629,6 +660,13 @@ namespace PerformanceExplorer
 
                     for (int k = 1; k <= endCount; k++)
                     {
+                        inlinesExplored++;
+
+                        if (inlinesExplored > inlineExporationLimit)
+                        {
+                            Console.WriteLine("$$$ Hit limit of {0} inlines explored, moving on", inlineExporationLimit);
+                        }
+
                         ulong ccDelta = 0;
                         Inline lastInlineK = 
                             ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults, recaptureResults, callCounts, out ccDelta);
@@ -1784,12 +1822,12 @@ namespace PerformanceExplorer
 
         // Paths to repos and binaries. 
         // Todo: Make this configurable.
-        public static string CORECLR_ROOT = @"c:\repos\coreclr";
-        public static string CORECLR_BENCHMARK_ROOT = @"c:\repos\coreclr\bin\tests\Windows_NT.x64.Release\JIT\performance\codequality";
-        public static string CORERUN = @"c:\repos\coreclr\bin\tests\Windows_NT.x64.release\tests\Core_Root\corerun.exe";
+        public static string CORECLR_ROOT = @"d:\repos\coreclr";
+        public static string CORECLR_BENCHMARK_ROOT = @"d:\repos\coreclr\bin\tests\Windows_NT.x64.Release\JIT\performance\codequality";
+        public static string CORERUN = @"d:\repos\coreclr\bin\tests\Windows_NT.x64.release\tests\Core_Root\corerun.exe";
         public static string SHELL = @"c:\windows\system32\cmd.exe";
-        public static string RESULTS_DIR = @"c:\repos\PerformanceExplorer\results";
-        public static string SANDBOX_DIR = @"c:\repos\PerformanceExplorer\sandbox";
+        public static string RESULTS_DIR = @"d:\repos\PerformanceExplorer\results";
+        public static string SANDBOX_DIR = @"d:\repos\PerformanceExplorer\sandbox";
 
         // Various aspects of the exploration that can be enabled/disabled.
         // Todo: Make this configurable.
@@ -1872,6 +1910,13 @@ namespace PerformanceExplorer
 
             foreach (string s in benchmarksToRun)
             {
+                // ignore bytemark for now
+                if (s.IndexOf("bytemark", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    Console.WriteLine(".... bytemark disabled, sorry");
+                    continue;
+                }
+
                 List<Results> allResults = new List<Results>();
                 Benchmark b = new Benchmark();
                 b.ShortName = Path.GetFileName(s);
@@ -1962,7 +2007,7 @@ namespace PerformanceExplorer
                         e.Explore(dataModelFile, ref hasHeader);
                     }
 
-                    // dataModelFile.Flush();
+                    dataModelFile.Flush();
                 }
             }
 
