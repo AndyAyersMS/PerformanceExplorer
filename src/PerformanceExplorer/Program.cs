@@ -748,8 +748,10 @@ namespace PerformanceExplorer
                         XElement schema = schemas.First();
                         string schemaString = (string)schema;
                         // Add on the performance data column headers
-                        string extendedSchemaString = schemaString +
-                            ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct,InstRetiredPerCallDelta,Confidence";
+                        string extendedSchemaString = 
+                            "Benchmark,SubBenchmark," +
+                            schemaString + 
+                            ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct,CallDelta,InstRetiredPerCallDelta,Confidence";
 
                         // If we haven't yet emitted a local header, do so now.
                         if (!hasHeader)
@@ -820,15 +822,17 @@ namespace PerformanceExplorer
                             int coldSizeDelta = currentMethodColdSize - baseMethodColdSize;
                             int jitTimeDelta = currentMethodJitTime - baseMethodJitTime;
 
-                            dataModelFile.WriteLine("{0},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00},{7:0.00}",
+                            dataModelFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00}",
+                                benchmark.ShortName, subBench,
                                 dataString, 
                                 hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                                change / (1000 * 1000), pctDiff, perCallDelta, confidence);
+                                change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, confidence);
 
-                            combinedDataFile.WriteLine("{0},{1},{2},{3},{4:0.00},{5:0.00},{6:0.00},{7:0.00}",
+                            combinedDataFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00}",
+                                benchmark.ShortName, subBench,
                                 dataString,
                                 hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                                change / (1000 * 1000), pctDiff, perCallDelta, confidence);
+                                change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, confidence);
                         }
 
                         baseMethodHotSize = currentMethodHotSize;
@@ -1839,8 +1843,63 @@ namespace PerformanceExplorer
         public static bool ExploreInlines = true;
         public static bool CaptureCallCounts = true;
 
+        public static bool Configure()
+        {
+            // Verify repo root
+            if (Directory.Exists(REPO_ROOT))
+            {
+                if (Directory.Exists(Path.Combine(REPO_ROOT, "coreclr")))
+                {
+                    return true;
+                }
+            }
+
+            // Else search up from current WD
+            string cwd = Directory.GetCurrentDirectory();
+            Console.WriteLine("... coreclr repo not at {0}, searching up from {1}", REPO_ROOT, cwd);
+            DirectoryInfo cwdi = new DirectoryInfo(cwd);
+            bool found = false;
+            while (cwdi != null)
+            {
+                string prospect = Path.Combine(cwdi.FullName, "coreclr");
+                Console.WriteLine("... looking for {0}", prospect);
+                if (Directory.Exists(prospect))
+                {
+                    REPO_ROOT = cwdi.FullName;
+                    Console.WriteLine("... found coreclr repo at {0}", prospect);
+                    found = true;
+                    break;
+                }
+
+                cwdi = cwdi.Parent;
+            }
+
+            if (!found)
+            {
+                return false;
+            }
+
+            // Set up other paths
+            CORECLR_ROOT = Path.Combine(REPO_ROOT, "coreclr");
+            CORECLR_BENCHMARK_ROOT = Path.Combine(new string[]
+                {CORECLR_ROOT, "bin", "tests", "Windows_NT.x64.Release", "JIT", "performance", "codequality"});
+            CORERUN = Path.Combine(new string[] 
+                { CORECLR_ROOT, "bin", "tests", "Windows_NT.x64.release", "tests", "Core_Root", "corerun.exe"});
+            RESULTS_DIR = Path.Combine(REPO_ROOT, "PerformanceExplorer", "results");
+            SANDBOX_DIR = Path.Combine(REPO_ROOT, "PerformanceExplorer", "sandbox");
+
+            return true;
+        }
+
         public static int Main(string[] args)
         {
+            bool ok = Configure();
+            if (!ok)
+            {
+                Console.WriteLine("Cound not find coreclr repo");
+                return -1;
+            }
+
             Program p = new Program();
 
             // Enumerate benchmarks that can be run
