@@ -569,7 +569,7 @@ namespace PerformanceExplorer
             int methodsExplored = 0;
             int inlinesExplored = 0;
             int methodExplorationLimit = 100;
-            int inlineExporationLimit = 500;
+            int inlineExporationLimit = 259;
             List<Method> methodsToExplore = new List<Method>(endResults.Methods.Values);
             methodsToExplore.Sort(Method.HasMoreCalls);
 
