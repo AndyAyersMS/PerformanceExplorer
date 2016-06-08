@@ -1342,7 +1342,7 @@ namespace PerformanceExplorer
             Console.WriteLine("----");
             Console.WriteLine("---- No Inline Model for {0}", b.ShortName);
 
-            Configuration noInlineConfig = new Configuration("noinline");
+            Configuration noInlineConfig = new Configuration("noinl");
             noInlineConfig.ResultsDirectory = Program.RESULTS_DIR;
             noInlineConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
             noInlineConfig.Environment["COMPlus_JitInlineLimit"] = "0";
@@ -1604,7 +1604,7 @@ namespace PerformanceExplorer
                 fullConfiguration.Environment["COMPlus_JitInlinePolicyFull"] = "1";
                 fullConfiguration.Environment["COMPlus_JitInlineDepth"] = "10";
                 fullConfiguration.Environment["COMPlus_JitInlineSize"] = "200";
-                fullConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "2";
+                fullConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
                 // Build an exclude string disabiling inlining in all the methods we've
                 // collected so far. If there are no methods yet, don't bother.
@@ -1837,11 +1837,12 @@ namespace PerformanceExplorer
 
         // Various aspects of the exploration that can be enabled/disabled.
         // Todo: Make this configurable.
-        public static bool UseFullModel = false;
-        public static bool UseModelModel = false;
+        public static bool UseFullModel = true;
+        public static bool UseModelModel = true;
         public static bool UseSizeModel = false;
-        public static bool ExploreInlines = true;
-        public static bool CaptureCallCounts = true;
+        public static bool ExploreInlines = false;
+        public static bool CaptureCallCounts = false;
+        public static bool SkipBytemark = false;
 
         public static bool Configure()
         {
@@ -1969,16 +1970,19 @@ namespace PerformanceExplorer
                 dataModelFile = File.CreateText(dataModelFileName);
             }
 
+            // Collect up result sets
+            List<List<Results>> aggregateResults = new List<List<Results>>(benchmarksToRun.Count());
+
             foreach (string s in benchmarksToRun)
             {
                 // ignore bytemark for now
-                if (s.IndexOf("bytemark", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (SkipBytemark && s.IndexOf("bytemark", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     Console.WriteLine(".... bytemark disabled, sorry");
                     continue;
                 }
 
-                List<Results> allResults = new List<Results>();
+                List<Results> benchmarkResults = new List<Results>();
                 Benchmark b = new Benchmark();
                 b.ShortName = Path.GetFileName(s);
                 b.FullPath = s;
@@ -1990,7 +1994,7 @@ namespace PerformanceExplorer
                     Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
                     continue;
                 }
-                allResults.Add(noInlineResults);
+                benchmarkResults.Add(noInlineResults);
 
                 Results legacyResults = BuildLegacyModel(r, x, b);
                 if (legacyResults == null)
@@ -1998,7 +2002,7 @@ namespace PerformanceExplorer
                     Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
                     continue;
                 }
-                allResults.Add(legacyResults);
+                benchmarkResults.Add(legacyResults);
 
                 // See impact of LegacyPolicy inlines
 
@@ -2028,7 +2032,7 @@ namespace PerformanceExplorer
                         continue;
                     }
 
-                    allResults.Add(fullResults);
+                    benchmarkResults.Add(fullResults);
 
                     CallGraph g = new CallGraph(fullResults);
                     string fileName = b.ShortName + "-callgraph.dot";
@@ -2043,7 +2047,7 @@ namespace PerformanceExplorer
                         Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
                         continue;
                     }
-                    allResults.Add(modelResults);
+                    benchmarkResults.Add(modelResults);
                 }
 
                 if (UseSizeModel)
@@ -2054,14 +2058,14 @@ namespace PerformanceExplorer
                         Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
                         continue;
                     }
-                    allResults.Add(sizeResults);
+                    benchmarkResults.Add(sizeResults);
                 }
 
-                ComparePerf(allResults);
+                aggregateResults.Add(benchmarkResults);
 
                 if (ExploreInlines)
                 {
-                    var thingsToExplore = ExaminePerf(b, allResults);
+                    var thingsToExplore = ExaminePerf(b, benchmarkResults);
 
                     foreach (Exploration e in thingsToExplore)
                     {
@@ -2072,23 +2076,34 @@ namespace PerformanceExplorer
                 }
             }
 
+            bool first = true;
+            foreach(List<Results> rr in aggregateResults)
+            {
+                ComparePerf(rr, first);
+                first = false;
+            }
+
             return 100;
         }
 
-        void ComparePerf(List<Results> results)
+        void ComparePerf(List<Results> results, bool showHeader = true)
         {
             Results baseline = results.First();
-            Console.WriteLine("---- Perf Results----");
-            Console.Write("{0,-12}", "Test");
-            foreach (Results r in results)
+
+            if (showHeader)
             {
-                Console.Write(" {0,8}.T {0,8}.I", r.Name);
+                Console.WriteLine("---- Perf Results----");
+                Console.Write("{0,-42}", "Test");
+                foreach (Results r in results)
+                {
+                    Console.Write(" {0,8}.T {0,8}.I", r.Name);
+                }
+                Console.WriteLine();
             }
-            Console.WriteLine();
 
             foreach (string subBench in baseline.Performance.ExecutionTime.Keys)
             {
-                Console.Write("{0,-12}", subBench);
+                Console.Write("{0,-42}", subBench);
 
                 foreach (Results diff in results)
                 {
