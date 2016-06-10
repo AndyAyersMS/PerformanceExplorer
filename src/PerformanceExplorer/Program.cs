@@ -569,7 +569,7 @@ namespace PerformanceExplorer
             int methodsExplored = 0;
             int inlinesExplored = 0;
             int methodExplorationLimit = 100;
-            int inlineExporationLimit = 259;
+            int inlineExporationLimit = 350;
             List<Method> methodsToExplore = new List<Method>(endResults.Methods.Values);
             methodsToExplore.Sort(Method.HasMoreCalls);
 
@@ -580,6 +580,7 @@ namespace PerformanceExplorer
 
                 if (endCount == 0)
                 {
+                    Console.WriteLine("$$$ Skipping {0}, no inlines", rootMethod.Name);
                     continue;
                 }
 
@@ -587,12 +588,14 @@ namespace PerformanceExplorer
                 // and so any apparent call count reductions from main will be misleading.
                 if (rootMethod.Name.Equals("Main"))
                 {
+                    Console.WriteLine("$$$ Skipping {0}, not driven by xunit-perf", rootMethod.Name);
                     continue;
                 }
 
                 // Only expore methods that were called
                 if (rootMethod.CallCount == 0)
                 {
+                    Console.WriteLine("$$$ Skipping {0}, not called", rootMethod.Name);
                     continue;
                 }
 
@@ -1445,37 +1448,7 @@ namespace PerformanceExplorer
             noInlineCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
             Results ccResults = r.RunBenchmark(b, noInlineCallCountConfig);
 
-            // Parse results back and annotate base method set
-            using (StreamReader callCountStream = File.OpenText(ccResults.LogFile))
-            {
-                string callCountLine = callCountStream.ReadLine();
-                while (callCountLine != null)
-                {
-                    string[] callCountFields = callCountLine.Split(new char[] { ',' });
-                    if (callCountFields.Length == 3)
-                    {
-                        uint token = UInt32.Parse(callCountFields[0], System.Globalization.NumberStyles.HexNumber);
-                        uint hash = UInt32.Parse(callCountFields[1], System.Globalization.NumberStyles.HexNumber);
-                        ulong count = UInt64.Parse(callCountFields[2]);
-
-                        MethodId id = new MethodId();
-                        id.Hash = hash;
-                        id.Token = token;
-
-                        if (results.Methods.ContainsKey(id))
-                        {
-                            Method m = results.Methods[id];
-                            m.CallCount = count;
-                            Console.WriteLine("{0} called {1} times", m.Name, count);
-                        }
-                        else
-                        {
-                            Console.WriteLine("{0:X8} {1:X8} called {2} times, but is not in base set?", token, hash, count);
-                        }
-                    }
-                    callCountLine = callCountStream.ReadLine();
-                }
-            }
+            AnnotateCallCounts(ccResults, results);
 
             return results;
         }
@@ -1531,37 +1504,7 @@ namespace PerformanceExplorer
             Results ccResults = r.RunBenchmark(b, legacyCallCountConfig);
 
             // Parse results back and annotate base method set
-            using (StreamReader callCountStream = File.OpenText(ccResults.LogFile))
-            {
-                string callCountLine = callCountStream.ReadLine();
-                while (callCountLine != null)
-                {
-                    string[] callCountFields = callCountLine.Split(new char[] { ',' });
-                    if (callCountFields.Length == 3)
-                    {
-                        uint token = UInt32.Parse(callCountFields[0], System.Globalization.NumberStyles.HexNumber);
-                        uint hash = UInt32.Parse(callCountFields[1], System.Globalization.NumberStyles.HexNumber);
-                        ulong count = UInt64.Parse(callCountFields[2]);
-
-                        MethodId id = new MethodId();
-                        id.Hash = hash;
-                        id.Token = token;
-
-                        if (legacyResults.Methods.ContainsKey(id))
-                        {
-                            Method m = legacyResults.Methods[id];
-                            m.CallCount = count;
-                            Console.WriteLine("{0} called {1} times", m.Name, count);
-                        }
-                        else
-                        {
-                            Console.WriteLine("{0:X8} {1:X8} called {2} times, but is not in legacy set?", token, hash, count);
-                        }
-                    }
-
-                    callCountLine = callCountStream.ReadLine();
-                }
-            }
+            AnnotateCallCounts(ccResults, legacyResults);
 
             return legacyResults;
         }
@@ -1742,6 +1685,18 @@ namespace PerformanceExplorer
             fullResults.Performance = perfResults.Performance;
             fullResults.Performance.Print("full");
 
+            // Get full call counts.
+            // Ideally, perhaps, drive this from the noinline set...?
+            Configuration fullPerfCallCountConfig = new Configuration("full-perf-cc");
+            fullPerfCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
+            fullPerfCallCountConfig.Environment["COMPlus_JitInlinePolicyFull"] = "1";
+            fullPerfCallCountConfig.Environment["COMPlus_JitInlineDepth"] = "10";
+            fullPerfCallCountConfig.Environment["COMPlus_JitInlineSize"] = "200";
+            fullPerfCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
+            Results ccResults = r.RunBenchmark(b, fullPerfCallCountConfig);
+
+            AnnotateCallCounts(ccResults, fullResults);
+
             return fullResults;
         }
 
@@ -1848,11 +1803,11 @@ namespace PerformanceExplorer
         // Various aspects of the exploration that can be enabled/disabled.
         // Todo: Make this configurable.
         public static bool UseFullModel = true;
-        public static bool UseModelModel = true;
+        public static bool UseModelModel = false;
         public static bool UseSizeModel = false;
-        public static bool ExploreInlines = false;
-        public static bool CaptureCallCounts = false;
-        public static bool SkipBytemark = false;
+        public static bool ExploreInlines = true;
+        public static bool CaptureCallCounts = true;
+        public static bool SkipProblemBenchmarks = true;
 
         public static bool Configure()
         {
@@ -1985,11 +1940,20 @@ namespace PerformanceExplorer
 
             foreach (string s in benchmarksToRun)
             {
-                // ignore bytemark for now
-                if (SkipBytemark && s.IndexOf("bytemark", StringComparison.OrdinalIgnoreCase) >= 0)
+                // Ignore benchmarks that are not reliable enough for us to to measure when looking for
+                // per-inline deltas.
+                if (SkipProblemBenchmarks)
                 {
-                    Console.WriteLine(".... bytemark disabled, sorry");
-                    continue;
+                    if (s.IndexOf("bytemark", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        Console.WriteLine(".... bytemark disabled (noisy), sorry");
+                        continue;
+                    }
+                    if (s.IndexOf("raytracer", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        Console.WriteLine(".... raytracer disabled (nondeterministic), sorry");
+                        continue;
+                    }
                 }
 
                 List<Results> benchmarkResults = new List<Results>();
@@ -2133,22 +2097,22 @@ namespace PerformanceExplorer
             Console.WriteLine("---- Perf Examination----");
             List<Exploration> interestingResults = new List<Exploration>();
 
-            // See if any of the results are both significantly different than noinline
-            // and measured with high confidence.
-            bool added = false;
-            foreach (string subBench in baseline.Performance.InstructionCount.Keys)
+            foreach (Results diff in results)
             {
-                List<double> baseData = baseline.Performance.InstructionCount[subBench];
-                double baseAvg = PerformanceData.Average(baseData);
-                bool shown = false;
-
-                foreach (Results diff in results)
+                // No need to investigate the baseline
+                if (diff == baseline)
                 {
-                    if (diff == baseline)
-                    {
-                        continue;
-                    }
+                    continue;
+                }
 
+                // See if any of the sub-bench results are both significantly different 
+                // than the baseline and measured with high confidence.
+                bool added = false;
+
+                foreach (string subBench in baseline.Performance.InstructionCount.Keys)
+                {
+                    List<double> baseData = baseline.Performance.InstructionCount[subBench];
+                    double baseAvg = PerformanceData.Average(baseData);
                     List<double> diffData = diff.Performance.InstructionCount[subBench];
                     double diffAvg = PerformanceData.Average(diffData);
                     double confidence = PerformanceData.Confidence(baseData, diffData);
@@ -2164,39 +2128,68 @@ namespace PerformanceExplorer
 
                     if (!added & interesting && confident)
                     {
-                        // Set up exploration of this performance diff (specify sub-bench?)
                         Exploration e = new Exploration();
                         e.baseResults = baseline;
                         e.endResults = diff;
                         e.benchmark = b;
                         interestingResults.Add(e);
                         added = true;
+
+                        Console.WriteLine(
+                            "$$$ {0} diff {1} in instructions between {2} ({3}) and {4} ({5}) "
+                            + "{6} interesting {7:0.00}% {8} significant p={9:0.00}",
+                            subBench, avgDiff / (1000 * 1000),
+                            baseline.Name, baseAvg / (1000 * 1000),
+                            diff.Name, diffAvg / (1000 * 1000),
+                            interestVerb, pctDiff,
+                            confidentVerb, confidence);
+
+                        break;
                     }
-
-                    if (!show)
-                    {
-                        continue;
-                    }
-
-                    shown = true;
-
-                    Console.WriteLine(
-                        "$$$ {0} diff {1} in instructions between {2} ({3}) and {4} ({5}) "
-                        + "{6} interesting {7:0.00}% {8} significant p={9:0.00}",
-                        subBench, avgDiff / (1000 * 1000),
-                        baseline.Name, baseAvg / (1000 * 1000),
-                        diff.Name, diffAvg / (1000 * 1000),
-                        interestVerb, pctDiff,
-                        confidentVerb, confidence);
                 }
 
-                if (!shown)
+                if (!added)
                 {
-                    Console.WriteLine("$$$ {0} no result diffs were both significant and confident", subBench);
+                    Console.WriteLine("$$$ {0} performance diff from {1} was not significant and confident", b.ShortName, diff.Name);
                 }
             }
 
             return interestingResults;
+        }
+
+        static void AnnotateCallCounts(Results ccResults, Results results)
+        {
+            // Parse results back and annotate base method set
+            using (StreamReader callCountStream = File.OpenText(ccResults.LogFile))
+            {
+                string callCountLine = callCountStream.ReadLine();
+                while (callCountLine != null)
+                {
+                    string[] callCountFields = callCountLine.Split(new char[] { ',' });
+                    if (callCountFields.Length == 3)
+                    {
+                        uint token = UInt32.Parse(callCountFields[0], System.Globalization.NumberStyles.HexNumber);
+                        uint hash = UInt32.Parse(callCountFields[1], System.Globalization.NumberStyles.HexNumber);
+                        ulong count = UInt64.Parse(callCountFields[2]);
+
+                        MethodId id = new MethodId();
+                        id.Hash = hash;
+                        id.Token = token;
+
+                        if (results.Methods.ContainsKey(id))
+                        {
+                            Method m = results.Methods[id];
+                            m.CallCount = count;
+                            Console.WriteLine("{0} called {1} times", m.Name, count);
+                        }
+                        else
+                        {
+                            Console.WriteLine("{0:X8} {1:X8} called {2} times, but is not in base set?", token, hash, count);
+                        }
+                    }
+                    callCountLine = callCountStream.ReadLine();
+                }
+            }
         }
     }
 }
