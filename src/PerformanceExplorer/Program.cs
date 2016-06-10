@@ -575,17 +575,23 @@ namespace PerformanceExplorer
 
             foreach (Method rootMethod in methodsToExplore)
             {
+                // Only explore methods that had inlines
                 int endCount = (int) rootMethod.InlineCount;
 
                 if (endCount == 0)
                 {
-                    // No inlines, so move on to next method.
                     continue;
                 }
 
                 // Don't bother exploring main since it won't be invoked via xperf
                 // and so any apparent call count reductions from main will be misleading.
                 if (rootMethod.Name.Equals("Main"))
+                {
+                    continue;
+                }
+
+                // Only expore methods that were called
+                if (rootMethod.CallCount == 0)
                 {
                     continue;
                 }
@@ -729,6 +735,7 @@ namespace PerformanceExplorer
                     int baseMethodHotSize = (int) baseResults.Methods[methodId].HotSize;
                     int baseMethodColdSize = (int) baseResults.Methods[methodId].ColdSize;
                     int baseMethodJitTime = (int) baseResults.Methods[methodId].JitTime;
+                    ulong baseMethodCallCount = baseResults.Methods[methodId].CallCount;
 
                     for (int i = 1; i < resultsSet.Length; i++)
                     {
@@ -751,7 +758,8 @@ namespace PerformanceExplorer
                         string extendedSchemaString = 
                             "Benchmark,SubBenchmark," +
                             schemaString + 
-                            ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct,CallDelta,InstRetiredPerCallDelta,Confidence";
+                            ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct" +
+                            ",CallDelta,InstRetiredPerCallDelta,InstRetiredPerRootCallDelta,Confidence";
 
                         // If we haven't yet emitted a local header, do so now.
                         if (!hasHeader)
@@ -817,22 +825,24 @@ namespace PerformanceExplorer
                             double pctDiff = 100.0 * change / rKm1Avg;
                             // Number of instructions saved per call to the current inlinee
                             double perCallDelta = (currentCCDelta == 0) ? 0 : change / currentCCDelta;
+                            // Number of instructions saved per call to the root method
+                            double perRootDelta = change / baseMethodCallCount;
 
                             int hotSizeDelta = currentMethodHotSize - baseMethodHotSize;
                             int coldSizeDelta = currentMethodColdSize - baseMethodColdSize;
                             int jitTimeDelta = currentMethodJitTime - baseMethodJitTime;
 
-                            dataModelFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00}",
+                            dataModelFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00}",
                                 benchmark.ShortName, subBench,
                                 dataString, 
                                 hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                                change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, confidence);
+                                change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, perRootDelta, confidence);
 
-                            combinedDataFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00}",
+                            combinedDataFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00}",
                                 benchmark.ShortName, subBench,
                                 dataString,
                                 hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                                change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, confidence);
+                                change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, perRootDelta, confidence);
                         }
 
                         baseMethodHotSize = currentMethodHotSize;
@@ -1213,9 +1223,9 @@ namespace PerformanceExplorer
             DirectoryInfo sandboxDirectoryInfo = new DirectoryInfo(sandboxDir);
 
             // Copy over xunit packages
-            string xUnitPerfRunner = Path.Combine(coreclrRoot, @"packages\Microsoft.DotNet.xunit.performance.runner.Windows\1.0.0-alpha-build0029\tools");
+            string xUnitPerfRunner = Path.Combine(coreclrRoot, @"packages\Microsoft.DotNet.xunit.performance.runner.Windows\1.0.0-alpha-build0035\tools");
             string xUnitPerfConsole = Path.Combine(coreclrRoot, @"packages\xunit.console.netcore\1.0.2-prerelease-00101\runtimes\any\native");
-            string xUnitPerfAnalysis = Path.Combine(coreclrRoot, @"packages\Microsoft.DotNet.xunit.performance.analysis\1.0.0-alpha-build0029\tools");
+            string xUnitPerfAnalysis = Path.Combine(coreclrRoot, @"packages\Microsoft.DotNet.xunit.performance.analysis\1.0.0-alpha-build0035\tools");
 
             CopyAll(new DirectoryInfo(xUnitPerfRunner), sandboxDirectoryInfo);
             CopyAll(new DirectoryInfo(xUnitPerfConsole), sandboxDirectoryInfo);
