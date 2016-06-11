@@ -592,12 +592,12 @@ namespace PerformanceExplorer
                     continue;
                 }
 
-                // Only expore methods that were called
-                if (rootMethod.CallCount == 0)
-                {
-                    Console.WriteLine("$$$ Skipping {0}, not called", rootMethod.Name);
-                    continue;
-                }
+                // Only expore methods that were called in the noinline run
+                //if (rootMethod.CallCount == 0)
+                //{
+                //    Console.WriteLine("$$$ Skipping {0}, not called", rootMethod.Name);
+                //    continue;
+                //}
 
                 methodsExplored++;
                 if (methodsExplored > methodExplorationLimit)
@@ -813,40 +813,56 @@ namespace PerformanceExplorer
                         int currentMethodJitTime = jitTimeIndex >= 0 ? Int32.Parse(dataStringX[jitTimeIndex]) : 0;
                         double currentCCDelta = ccDeltas[i];
 
-                        // How to handle data from multi-part benchmarks???
-                        // For now, iterate over the sub-parts and emit multiple records
-                        // (Might instead want to aggregate?)
+                        // How to handle data from multi-part benchmarks?
+                        // Aggregate it here, iteration-wise
+                        int subParts = rK.Performance.InstructionCount.Keys.Count;
+                        List<double> arKData = null;
+                        List<double> arKm1Data = null;
                         foreach (string subBench in rK.Performance.InstructionCount.Keys)
                         {
                             List<double> rKData = rK.Performance.InstructionCount[subBench];
                             List<double> rKm1Data = rKm1.Performance.InstructionCount[subBench];
 
-                            double confidence = PerformanceData.Confidence(rKData, rKm1Data);
-                            double rKAvg = PerformanceData.Average(rKData);
-                            double rKm1Avg = PerformanceData.Average(rKm1Data);
-                            double change = rKAvg - rKm1Avg;
-                            double pctDiff = 100.0 * change / rKm1Avg;
-                            // Number of instructions saved per call to the current inlinee
-                            double perCallDelta = (currentCCDelta == 0) ? 0 : change / currentCCDelta;
-                            // Number of instructions saved per call to the root method
-                            double perRootDelta = change / baseMethodCallCount;
-
-                            int hotSizeDelta = currentMethodHotSize - baseMethodHotSize;
-                            int coldSizeDelta = currentMethodColdSize - baseMethodColdSize;
-                            int jitTimeDelta = currentMethodJitTime - baseMethodJitTime;
-
-                            dataModelFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00}",
-                                benchmark.ShortName, subBench,
-                                dataString, 
-                                hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                                change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, perRootDelta, confidence);
-
-                            combinedDataFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00}",
-                                benchmark.ShortName, subBench,
-                                dataString,
-                                hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                                change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, perRootDelta, confidence);
+                            if (arKData == null)
+                            {
+                                arKData = new List<double>(rKData);
+                                arKm1Data = new List<double>(rKm1Data);
+                            }
+                            else
+                            {
+                                for (int ii = 0; ii < arKData.Count; ii++)
+                                {
+                                    arKData[ii] += rKData[ii];
+                                    arKm1Data[ii] += rKm1Data[ii];
+                                }
+                            }
                         }
+
+                        double confidence = PerformanceData.Confidence(arKData, arKm1Data);
+                        double arKAvg = PerformanceData.Average(arKData);
+                        double arKm1Avg = PerformanceData.Average(arKm1Data);
+                        double change = arKAvg - arKm1Avg;
+                        double pctDiff = 100.0 * change / arKm1Avg;
+                        // Number of instructions saved per call to the current inlinee
+                        double perCallDelta = (currentCCDelta == 0) ? 0 : change / currentCCDelta;
+                        // Number of instructions saved per call to the root method
+                        double perRootDelta = (baseMethodCallCount == 0) ? 0 : change / baseMethodCallCount;
+
+                        int hotSizeDelta = currentMethodHotSize - baseMethodHotSize;
+                        int coldSizeDelta = currentMethodColdSize - baseMethodColdSize;
+                        int jitTimeDelta = currentMethodJitTime - baseMethodJitTime;
+
+                        dataModelFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00}",
+                            benchmark.ShortName, "agg",
+                            dataString,
+                            hotSizeDelta, coldSizeDelta, jitTimeDelta,
+                            change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, perRootDelta, confidence);
+
+                        combinedDataFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00}",
+                            benchmark.ShortName, "agg",
+                            dataString,
+                            hotSizeDelta, coldSizeDelta, jitTimeDelta,
+                            change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, perRootDelta, confidence);
 
                         baseMethodHotSize = currentMethodHotSize;
                         baseMethodColdSize = currentMethodColdSize;
@@ -1802,7 +1818,7 @@ namespace PerformanceExplorer
 
         // Various aspects of the exploration that can be enabled/disabled.
         // Todo: Make this configurable.
-        public static bool UseFullModel = true;
+        public static bool UseFullModel = false;
         public static bool UseModelModel = false;
         public static bool UseSizeModel = false;
         public static bool ExploreInlines = true;
