@@ -1853,8 +1853,10 @@ namespace PerformanceExplorer
         public static uint MinIterations = 5;
         public static uint MaxIterations = 5;
 
-        public static void ParseArgs(string[] args)
+        public static List<string> ParseArgs(string[] args)
         {
+            List<string> benchNames = new List<string>();
+
             for (int i = 0; i< args.Length; i++)
             {
                 string arg = args[i];
@@ -1895,7 +1897,13 @@ namespace PerformanceExplorer
                         Console.WriteLine("... ignoring '{0}'", arg);
                     }
                 }
+                else
+                {
+                    benchNames.Add(arg);
+                }
             }
+
+            return benchNames;
         }
 
         public static bool Configure()
@@ -1948,7 +1956,7 @@ namespace PerformanceExplorer
 
         public static int Main(string[] args)
         {
-            ParseArgs(args);
+            List<string> benchNames = ParseArgs(args);
             bool ok = Configure();
             if (!ok)
             {
@@ -1974,7 +1982,7 @@ namespace PerformanceExplorer
             // Otherwise run them all.
             List<string> benchmarksToRun = new List<string>();
 
-            if (args.Length == 0)
+            if (benchNames.Count == 0)
             {
                 Console.WriteLine("...Running all benchmarks");
                 benchmarksToRun.AddRange(benchmarks.Values);
@@ -1982,7 +1990,7 @@ namespace PerformanceExplorer
             else
             {
                 Console.WriteLine("...Scanning for benchmarks matching your pattern(s)");
-                foreach (string item in args)
+                foreach (string item in benchNames)
                 {
                     int beforeCount = benchmarksToRun.Count;
                     foreach (string benchName in benchmarks.Keys)
