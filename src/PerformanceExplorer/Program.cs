@@ -560,6 +560,7 @@ namespace PerformanceExplorer
                     exploreCount += endCount;
                 }
             }
+
             Console.WriteLine("$$$ Examining {0} methods, {1} inline combinations", candidateCount, exploreCount);
 
             // Todo: order methods by call count. Find top N% of these. Determine callers (and up the tree)
@@ -599,6 +600,7 @@ namespace PerformanceExplorer
                     continue;
                 }
 
+                // Limit breadth of exploration
                 methodsExplored++;
                 if (methodsExplored > methodExplorationLimit)
                 {
@@ -607,9 +609,21 @@ namespace PerformanceExplorer
                     break;
                 }
 
+                // Limit volume of exploration
                 if (inlinesExplored > inlineExporationLimit)
                 {
+                    Console.WriteLine("$$$ {0}: Explored {1} inlines, moving on to next benchmark",
+                        benchmark.ShortName, inlineExporationLimit);
                     break;
+                }
+
+                // Trim exploration here if full explore would put us over the limit
+                if (inlinesExplored + endCount > inlineExporationLimit)
+                {
+                    int newEndCount = inlineExporationLimit - inlinesExplored;
+                    Console.WriteLine("$$$ May hit limit of {0} inlines explored, trimming end count from {1} to {2}", 
+                        inlineExporationLimit, endCount, newEndCount);
+                    endCount = newEndCount;
                 }
 
                 // Noinline perf is already "known" from the baseline, so exclude that here.
@@ -637,7 +651,7 @@ namespace PerformanceExplorer
                 recaptureResults[0] = baseResults;
 
                 // Call count reduction at each step of the tree expansion
-                List<double> ccDeltas = new List<double>();
+                List<double> ccDeltas = new List<double>(endCount + 1);
 
                 // We take advantage of the fact that for replay Xml, the default is to not inline.
                 // So we only need to emit Xml for the methods we want to inline. Since we're only
@@ -665,23 +679,16 @@ namespace PerformanceExplorer
                 {
                     Console.WriteLine("$$$ Full subtree perf significant, exploring...");
                     ShowResults(explorationResults, endCount, 0, rootMethod, lastInline, null, 0);
-                    ccDeltas.Add(0);
+                    ccDeltas[0] = 0;
 
                     for (int k = 1; k <= endCount; k++)
                     {
                         inlinesExplored++;
-
-                        if (inlinesExplored > inlineExporationLimit)
-                        {
-                            Console.WriteLine("$$$ Hit limit of {0} inlines explored, moving on", inlineExporationLimit);
-                            break;
-                        }
-
                         ulong ccDelta = 0;
                         Inline lastInlineK = 
                             ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults, recaptureResults, callCounts, out ccDelta);
                         ShowResults(explorationResults, k, k - 1, rootMethod, lastInlineK, deltas, ccDelta);
-                        ccDeltas.Add(ccDelta);
+                        ccDeltas[k] = ccDelta;
                     }
 
                     // Save off results for later processing.
@@ -1290,6 +1297,8 @@ namespace PerformanceExplorer
                 runnerProcess.StartInfo.Environment[envVar] = c.Environment[envVar];
             }
             runnerProcess.StartInfo.Environment["CORE_ROOT"] = sandboxDir;
+            runnerProcess.StartInfo.Environment["XUNIT_PERFORMANCE_MIN_ITERATION"] = Program.MinIterations.ToString();
+            runnerProcess.StartInfo.Environment["XUNIT_PERFORMANCE_MAX_ITERATION"] = Program.MaxIterations.ToString();
             runnerProcess.StartInfo.Arguments = benchmarkFile + 
                 " -nologo -runner xunit.console.netcore.exe -runnerhost corerun.exe -runid " + perfName;
             runnerProcess.StartInfo.WorkingDirectory = sandboxDir;
@@ -1833,6 +1842,53 @@ namespace PerformanceExplorer
         public static bool ExploreInlines = true;
         public static bool CaptureCallCounts = true;
         public static bool SkipProblemBenchmarks = true;
+        public static uint MinIterations = 5;
+        public static uint MaxIterations = 5;
+
+        public static void ParseArgs(string[] args)
+        {
+            for (int i = 0; i< args.Length; i++)
+            {
+                string arg = args[i];
+
+                if (arg[0] == '-')
+                {
+                    if (arg == "-perf")
+                    {
+                        ExploreInlines = false;
+                        CaptureCallCounts = false;
+                    }
+                    else if (arg == "-allTests")
+                    {
+                        SkipProblemBenchmarks = false;
+                    }
+                    else if (arg == "-useFull")
+                    {
+                        UseFullModel = true;
+                    }
+                    else if (arg == "-useSize")
+                    {
+                        UseSizeModel = true;
+                    }
+                    else if (arg == "-useModel")
+                    {
+                        UseModelModel = true;
+                    }
+                    else if (arg == "-minIterations" && (i + 1) < args.Length)
+                    {
+                        MinIterations = UInt32.Parse(args[++i]);
+                    }
+                    else if (arg == "-maxIterations" && (i + 1) < args.Length)
+                    {
+                        MaxIterations = UInt32.Parse(args[++i]);
+                    }
+                    else
+                    {
+                        Console.WriteLine("... ignoring '{0}'", arg);
+                    }
+                }
+            }
+        }
 
         public static bool Configure()
         {
@@ -1884,6 +1940,7 @@ namespace PerformanceExplorer
 
         public static int Main(string[] args)
         {
+            ParseArgs(args);
             bool ok = Configure();
             if (!ok)
             {
