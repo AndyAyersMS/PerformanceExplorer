@@ -546,7 +546,7 @@ namespace PerformanceExplorer
             Dictionary<MethodId, Results[]> recapturedData = new Dictionary<MethodId, Results[]>();
 
             // Similar but for call count reductions....
-            Dictionary<MethodId, List<double>> recapturedCC = new Dictionary<MethodId, List<double>>();
+            Dictionary<MethodId, double[]> recapturedCC = new Dictionary<MethodId, double[]>();
 
             // Count methods in end results with inlines, and total subtree size.
             int candidateCount = 0;
@@ -651,7 +651,7 @@ namespace PerformanceExplorer
                 recaptureResults[0] = baseResults;
 
                 // Call count reduction at each step of the tree expansion
-                List<double> ccDeltas = new List<double>(endCount + 1);
+                double[] ccDeltas = new double[endCount + 1];
 
                 // We take advantage of the fact that for replay Xml, the default is to not inline.
                 // So we only need to emit Xml for the methods we want to inline. Since we're only
@@ -737,7 +737,7 @@ namespace PerformanceExplorer
                 foreach (MethodId methodId in recapturedData.Keys)
                 {
                     Results[] resultsSet = recapturedData[methodId];
-                    List<double> ccDeltas = recapturedCC[methodId];
+                    double[] ccDeltas = recapturedCC[methodId];
 
                     // resultsSet[0] is the noinline run. We don't have a <Data> entry
                     // for it, but key column values are spilled into the inline Xml and
@@ -969,11 +969,19 @@ namespace PerformanceExplorer
                                 if (callCounts.ContainsKey(currentId))
                                 {
                                     // Note we expect it not to increase!
+                                    //
+                                    // Zero is possible if we inline at a call site that was not hit.
+                                    // We may even see perf impact with zero call count change,
+                                    // because of changes elsewhere in the method in code that is hit.
                                     ulong oldCount = callCounts[currentId];
                                     callCounts[currentId] = count;
                                     Console.WriteLine("Call count for {0:X8}-{1:X8} went from {2} to {3}",
                                         token, hash, oldCount, count);
                                     ccDelta = oldCount - count;
+                                    if (ccDelta < 0)
+                                    {
+                                        Console.WriteLine("Call count unexpectedly increased!");
+                                    }
                                 }
                                 else
                                 {
