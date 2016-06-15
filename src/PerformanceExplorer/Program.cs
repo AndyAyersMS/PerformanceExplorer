@@ -593,11 +593,11 @@ namespace PerformanceExplorer
                 }
 
                 // Only expore methods that were called in the noinline run
-                //if (rootMethod.CallCount == 0)
-                //{
-                //    Console.WriteLine("$$$ Skipping {0}, not called", rootMethod.Name);
-                //    continue;
-                //}
+                if (rootMethod.CallCount == 0)
+                {
+                    Console.WriteLine("$$$ Skipping {0}, not called", rootMethod.Name);
+                    continue;
+                }
 
                 methodsExplored++;
                 if (methodsExplored > methodExplorationLimit)
@@ -1457,14 +1457,17 @@ namespace PerformanceExplorer
             // Get noinline method call counts
             // Todo: use xunit runner and capture stderr? Downside is that xunit-perf
             // entry points won't be in the baseline method set.
-            Configuration noInlineCallCountConfig = new Configuration("noinline-cc");
-            noInlineCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
-            noInlineCallCountConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
-            noInlineCallCountConfig.Environment["COMPlus_JitInlineLimit"] = "0";
-            noInlineCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
-            Results ccResults = r.RunBenchmark(b, noInlineCallCountConfig);
+            if (CaptureCallCounts)
+            {
+                Configuration noInlineCallCountConfig = new Configuration("noinline-cc");
+                noInlineCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
+                noInlineCallCountConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
+                noInlineCallCountConfig.Environment["COMPlus_JitInlineLimit"] = "0";
+                noInlineCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
+                Results ccResults = r.RunBenchmark(b, noInlineCallCountConfig);
 
-            AnnotateCallCounts(ccResults, results);
+                AnnotateCallCounts(ccResults, results);
+            }
 
             return results;
         }
@@ -1514,13 +1517,16 @@ namespace PerformanceExplorer
             legacyResults.Performance.Print(legacyConfig.Name);
 
             // Get legacy method call counts
-            Configuration legacyCallCountConfig = new Configuration("legacy-cc");
-            legacyCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
-            legacyCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
-            Results ccResults = r.RunBenchmark(b, legacyCallCountConfig);
+            if (CaptureCallCounts)
+            {
+                Configuration legacyCallCountConfig = new Configuration("legacy-cc");
+                legacyCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
+                legacyCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
+                Results ccResults = r.RunBenchmark(b, legacyCallCountConfig);
 
-            // Parse results back and annotate base method set
-            AnnotateCallCounts(ccResults, legacyResults);
+                // Parse results back and annotate base method set
+                AnnotateCallCounts(ccResults, legacyResults);
+            }
 
             return legacyResults;
         }
@@ -1703,15 +1709,18 @@ namespace PerformanceExplorer
 
             // Get full call counts.
             // Ideally, perhaps, drive this from the noinline set...?
-            Configuration fullPerfCallCountConfig = new Configuration("full-perf-cc");
-            fullPerfCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
-            fullPerfCallCountConfig.Environment["COMPlus_JitInlinePolicyFull"] = "1";
-            fullPerfCallCountConfig.Environment["COMPlus_JitInlineDepth"] = "10";
-            fullPerfCallCountConfig.Environment["COMPlus_JitInlineSize"] = "200";
-            fullPerfCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
-            Results ccResults = r.RunBenchmark(b, fullPerfCallCountConfig);
+            if (CaptureCallCounts)
+            {
+                Configuration fullPerfCallCountConfig = new Configuration("full-perf-cc");
+                fullPerfCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
+                fullPerfCallCountConfig.Environment["COMPlus_JitInlinePolicyFull"] = "1";
+                fullPerfCallCountConfig.Environment["COMPlus_JitInlineDepth"] = "10";
+                fullPerfCallCountConfig.Environment["COMPlus_JitInlineSize"] = "200";
+                fullPerfCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
+                Results ccResults = r.RunBenchmark(b, fullPerfCallCountConfig);
 
-            AnnotateCallCounts(ccResults, fullResults);
+                AnnotateCallCounts(ccResults, fullResults);
+            }
 
             return fullResults;
         }
