@@ -569,19 +569,22 @@ namespace PerformanceExplorer
             // Explore each method with inlines. Arbitrarily bail after some number of explorations.
             int methodsExplored = 0;
             int inlinesExplored = 0;
-            int methodExplorationLimit = 100;
-            int inlineExporationLimit = 350;
+            int perMethodExplorationLimit = 50;
+            int perBenchmarkExplorationLimit = 1000;
             List<Method> methodsToExplore = new List<Method>(endResults.Methods.Values);
             methodsToExplore.Sort(Method.HasMoreCalls);
 
             foreach (Method rootMethod in methodsToExplore)
             {
+                Console.WriteLine("$$$ InlinesExplored {0} MethodsExplored {1}", inlinesExplored, methodsExplored);
+                Console.WriteLine("$$$ Exploring inlines for {0}", rootMethod.Name);
+
                 // Only explore methods that had inlines
                 int endCount = (int) rootMethod.InlineCount;
 
                 if (endCount == 0)
                 {
-                    Console.WriteLine("$$$ Skipping {0}, no inlines", rootMethod.Name);
+                    Console.WriteLine("$$$ Skipping -- no inlines");
                     continue;
                 }
 
@@ -589,40 +592,38 @@ namespace PerformanceExplorer
                 // and so any apparent call count reductions from main will be misleading.
                 if (rootMethod.Name.Equals("Main"))
                 {
-                    Console.WriteLine("$$$ Skipping {0}, not driven by xunit-perf", rootMethod.Name);
+                    Console.WriteLine("$$$ Skipping -- not driven by xunit-perf");
                     continue;
                 }
 
                 // Only expore methods that were called in the noinline run
                 if (rootMethod.CallCount == 0)
                 {
-                    Console.WriteLine("$$$ Skipping {0}, not called", rootMethod.Name);
+                    Console.WriteLine("$$$ Skipping -- not called");
                     continue;
                 }
 
-                // Limit breadth of exploration
-                methodsExplored++;
-                if (methodsExplored > methodExplorationLimit)
+                // Limit volume of exploration
+                if (inlinesExplored >= perBenchmarkExplorationLimit)
                 {
-                    Console.WriteLine("$$$ {0}: Explored {1} roots, moving on to next benchmark", 
-                        benchmark.ShortName, methodExplorationLimit);
+                    Console.WriteLine("$$$ Reached benchmark limit of {0} explored inlines, moving on to next benchmark",
+                        perBenchmarkExplorationLimit);
                     break;
                 }
 
-                // Limit volume of exploration
-                if (inlinesExplored > inlineExporationLimit)
+                if (endCount > perMethodExplorationLimit)
                 {
-                    Console.WriteLine("$$$ {0}: Explored {1} inlines, moving on to next benchmark",
-                        benchmark.ShortName, inlineExporationLimit);
-                    break;
+                    int newEndCount = perMethodExplorationLimit;
+                    Console.WriteLine("$$$ Limiting exploration for this root to {0} inlines out of {1}", newEndCount, endCount);
+                    endCount = newEndCount;
                 }
 
                 // Trim exploration here if full explore would put us over the limit
-                if (inlinesExplored + endCount > inlineExporationLimit)
+                if (inlinesExplored + endCount >= perBenchmarkExplorationLimit)
                 {
-                    int newEndCount = inlineExporationLimit - inlinesExplored;
-                    Console.WriteLine("$$$ May hit limit of {0} inlines explored, trimming end count from {1} to {2}", 
-                        inlineExporationLimit, endCount, newEndCount);
+                    int newEndCount = perBenchmarkExplorationLimit - inlinesExplored;
+                    Console.WriteLine("$$$ Might hit limit of {0} inlines explored, trimming end count from {1} to {2}", 
+                        perBenchmarkExplorationLimit, endCount, newEndCount);
                     endCount = newEndCount;
                 }
 
@@ -631,11 +632,11 @@ namespace PerformanceExplorer
                 // The maximal subtree perf may not equal the end perf because the latter allows inlines
                 // in all methods, and we're just inlining into one method at a time here.
                 Console.WriteLine("$$$ [{0}] examining method {1} {2:X8} with {3} inlines and {4} permutations via BFS.",
-                methodsExplored, rootMethod.Name, rootMethod.Token, endCount, rootMethod.NumSubtrees() - 1);
+                methodsExplored++, rootMethod.Name, rootMethod.Token, endCount, rootMethod.NumSubtrees() - 1);
                 rootMethod.Dump();
 
                 // Now for the actual experiment. We're going to grow the method's inline tree from the
-                // baseline tree (which is noinline) to the end result tree. For sufficiently large trees
+                // baseline tree (which is noinline) towards the end result tree. For sufficiently large trees
                 // there are lots of intermediate subtrees. For now we just do a simple breadth-first linear
                 // exploration.
                 //
@@ -1844,6 +1845,7 @@ namespace PerformanceExplorer
 
         // Various aspects of the exploration that can be enabled/disabled.
         // Todo: Make this configurable.
+        public static bool UseLegacyModel = true;
         public static bool UseFullModel = false;
         public static bool UseModelModel = false;
         public static bool UseSizeModel = false;
@@ -1871,6 +1873,14 @@ namespace PerformanceExplorer
                     else if (arg == "-allTests")
                     {
                         SkipProblemBenchmarks = false;
+                    }
+                    else if (arg == "-noLegacy")
+                    {
+                        UseLegacyModel = false;
+                    }
+                    else if (arg == "-noExplore")
+                    {
+                        ExploreInlines = false;
                     }
                     else if (arg == "-useFull")
                     {
@@ -2068,31 +2078,34 @@ namespace PerformanceExplorer
                 }
                 benchmarkResults.Add(noInlineResults);
 
-                Results legacyResults = BuildLegacyModel(r, x, b);
-                if (legacyResults == null)
+                if (UseLegacyModel)
                 {
-                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
-                    continue;
-                }
-                benchmarkResults.Add(legacyResults);
+                    Results legacyResults = BuildLegacyModel(r, x, b);
+                    if (legacyResults == null)
+                    {
+                        Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                        continue;
+                    }
+                    benchmarkResults.Add(legacyResults);
 
-                // See impact of LegacyPolicy inlines
+                    // See impact of LegacyPolicy inlines
 
-                int legacyCount = legacyResults.Performance.ExecutionTime.Count;
-                int noInlineCount = noInlineResults.Performance.ExecutionTime.Count;
+                    int legacyCount = legacyResults.Performance.ExecutionTime.Count;
+                    int noInlineCount = noInlineResults.Performance.ExecutionTime.Count;
 
-                if (legacyCount != noInlineCount)
-                {
-                    Console.WriteLine("Odd, noinline had {0} parts, legacy has {1} parts. " +
-                        "Skipping remainder of work for this benchmark",
-                        noInlineCount, legacyCount);
-                    continue;
-                }
+                    if (legacyCount != noInlineCount)
+                    {
+                        Console.WriteLine("Odd, noinline had {0} parts, legacy has {1} parts. " +
+                            "Skipping remainder of work for this benchmark",
+                            noInlineCount, legacyCount);
+                        continue;
+                    }
 
-                if (legacyCount == 0)
-                {
-                    Console.WriteLine("Odd, benchmark has no perf data. Skipping");
-                    continue;
+                    if (legacyCount == 0)
+                    {
+                        Console.WriteLine("Odd, benchmark has no perf data. Skipping");
+                        continue;
+                    }
                 }
 
                 if (UseFullModel)
