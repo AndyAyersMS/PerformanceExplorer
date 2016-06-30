@@ -672,9 +672,34 @@ namespace PerformanceExplorer
                 kForest.Methods = new Method[1];
                 kForest.Methods[0] = rootMethod.ShallowCopy();
 
-                ulong dontcare = 0;
-                Inline lastInline = 
+                // Always explore methods with one possible inline, since checking to see if the
+                // exploration is worthwhile costs just as much as doing the exploration.
+                //
+                // If there are multiple inlines, then jump to the end to see if any of them matter.
+                // If not then don't bother exploring the intermediate states.
+                //
+                // This might bias the exploration into visiting more good cases than "normal".
+                if (rootMethod.InlineCount > 1)
+                {
+                    // See if any inline in the tree has a perf impact. If not, don't bother exploring.
+                    ulong dontcare = 0;
                     ExploreSubtree(kForest, endCount, rootMethod, benchmark, explorationResults, null, null, out dontcare);
+                    bool shouldExplore = CheckResults(explorationResults, endCount, 0);
+
+                    if (!shouldExplore)
+                    {
+                        Console.WriteLine("$$$ Full subtree perf NOT significant, skipping...");
+                        continue;
+                    }
+                    else
+                    {
+                        Console.WriteLine("$$$ Full subtree perf significant, exploring...");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("$$$ Single inline, exploring...");
+                }
 
                 // Keep track of the current call count for each method.
                 // Initial value is the base model's count.
@@ -684,33 +709,23 @@ namespace PerformanceExplorer
                     callCounts[id] = baseResults.Methods[id].CallCount;
                 }
 
-                bool fullyExplore = CheckResults(explorationResults, endCount, 0);
+                // TODO: Every so often, rerun the noinline baseline, and see if we have baseline shift.
 
-                if (fullyExplore)
+                ccDeltas[0] = 0;
+
+                for (int k = 1; k <= endCount; k++)
                 {
-                    Console.WriteLine("$$$ Full subtree perf significant, exploring...");
-                    ShowResults(explorationResults, endCount, 0, rootMethod, lastInline, null, 0);
-                    ccDeltas[0] = 0;
-
-                    for (int k = 1; k <= endCount; k++)
-                    {
-                        inlinesExplored++;
-                        ulong ccDelta = 0;
-                        Inline lastInlineK = 
-                            ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults, recaptureResults, callCounts, out ccDelta);
-                        ShowResults(explorationResults, k, k - 1, rootMethod, lastInlineK, deltas, ccDelta);
-                        ccDeltas[k] = ccDelta;
-                    }
-
-                    // Save off results for later processing.
-                    recapturedData[rootMethod.getId()] = recaptureResults;
-                    recapturedCC[rootMethod.getId()] = ccDeltas;
+                    inlinesExplored++;
+                    ulong ccDelta = 0;
+                    Inline lastInlineK =
+                        ExploreSubtree(kForest, k, rootMethod, benchmark, explorationResults, recaptureResults, callCounts, out ccDelta);
+                    ShowResults(explorationResults, k, k - 1, rootMethod, lastInlineK, deltas, ccDelta);
+                    ccDeltas[k] = ccDelta;
                 }
-                else
-                {
-                    Console.WriteLine("$$$ Full subtree perf not significantly different, moving on");
-                    continue;
-                }
+
+                // Save off results for later processing.
+                recapturedData[rootMethod.getId()] = recaptureResults;
+                recapturedCC[rootMethod.getId()] = ccDeltas;
             }
 
             // Sort deltas and display

@@ -1,15 +1,15 @@
 {
   "version": "1.0.0-*",
-  "compilationOptions": {
+  "buildOptions": {
     "emitEntryPoint": true
   },
 
   "dependencies": {
     "Microsoft.NETCore.App": {
       "type": "platform",
-      "version": "1.0.0-rc2-24008"
+      "version": "1.0.0"
     },
-    "System.Xml.XmlSerializer": "4.0.11-rc2-24018"
+    "System.Xml.XmlSerializer": "4.0.11"
   },
 
   "frameworks": {
