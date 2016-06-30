@@ -40,7 +40,11 @@ namespace PerformanceExplorer
         {
             ExecutionTime = new SortedDictionary<string, List<double>>();
             InstructionCount = new SortedDictionary<string, List<double>>();
+            id = ++idGen;
         }
+
+        static int idGen = 0;
+        static int id;
 
         // subPart -> list of data
         public SortedDictionary<string, List<double>> ExecutionTime;
@@ -56,7 +60,7 @@ namespace PerformanceExplorer
 
         public void Summarize(string subBench, string configName)
         {
-            Console.Write("### {0} perf for {1}", configName, subBench);
+            Console.Write("### [{0}] {1} perf for {2}", id, configName, subBench);
 
             if (ExecutionTime.ContainsKey(subBench))
             {
@@ -570,7 +574,7 @@ namespace PerformanceExplorer
             int methodsExplored = 0;
             int inlinesExplored = 0;
             int perMethodExplorationLimit = 50;
-            int perBenchmarkExplorationLimit = 1000;
+            int perBenchmarkExplorationLimit = 75;
             List<Method> methodsToExplore = new List<Method>(endResults.Methods.Values);
             methodsToExplore.Sort(Method.HasMoreCalls);
 
@@ -596,10 +600,16 @@ namespace PerformanceExplorer
                     continue;
                 }
 
+                //if (!rootMethod.Name.Contains("b__1"))
+                //{
+                //    // Console.WriteLine("$$$ Skipping, not special method of interest");
+                //    continue;
+                //}
+
                 // Only expore methods that were called in the noinline run
                 if (rootMethod.CallCount == 0)
                 {
-                    Console.WriteLine("$$$ Skipping -- not called");
+                    //Console.WriteLine("$$$ Skipping -- not called");
                     continue;
                 }
 
@@ -1082,6 +1092,24 @@ namespace PerformanceExplorer
                 return;
             }
 
+            // Try and get the name of the last inline.
+            // We may not know it, if the method was prejitted, since it will
+            // never be a jit root.
+            // If so, use the token value.
+            MethodId currentMethodId = currentInline.GetMethodId();
+            string currentMethodName = null;
+            if (baseResults.Methods != null && baseResults.Methods.ContainsKey(currentMethodId))
+            {
+                currentMethodName = baseResults.Methods[currentMethodId].Name;
+            }
+            else
+            {
+                currentMethodName = String.Format("Token {0:X8} Hash {1:X8}",
+                    currentMethodId.Token, currentMethodId.Hash);
+            }
+
+            Console.WriteLine("$$$ Root {0} index {1} inlining {2}", rootMethod.Name, diffIndex, currentMethodName);
+
             foreach (string subBench in baseResults.Performance.InstructionCount.Keys)
             {
                 List<double> zeroData = zeroResults.Performance.InstructionCount[subBench];
@@ -1099,33 +1127,19 @@ namespace PerformanceExplorer
                 double change0 = diffAvg - zeroAvg;
                 double pctDiff0 = 100.0 * change0 / zeroAvg;
 
-                // Try and get the name of the last inline.
-                // We may not know it, if the method was prejitted, since it will
-                // never be a jit root.
-                // If so, use the token value.
-                MethodId currentMethodId = currentInline.GetMethodId();
-                string currentMethodName = null;
-                if (baseResults.Methods != null && baseResults.Methods.ContainsKey(currentMethodId))
-                {
-                    currentMethodName = baseResults.Methods[currentMethodId].Name;
-                }
-                else
-                {
-                    currentMethodName = String.Format("Token {0:X8} Hash {1:X8}", 
-                        currentMethodId.Token, currentMethodId.Hash);
-                }
-
-                Console.WriteLine("$$$ Bench {0} root {1} index {2} inlining {3}",
-                    subBench, rootMethod.Name, diffIndex, currentMethodName);
-                Console.WriteLine("$$$ current delta {0:0.00} M instr ({1:0.00}%) confidence {2:0.00}",
+                Console.WriteLine("{0:30}: base {1:0.00}M new {2:0.00}M delta {3:0.00}M ({4:0.00}%) confidence {5:0.00}",
+                    subBench,
+                    baseAvg / (1000 * 1000), diffAvg / (1000 * 1000),
                     change / (1000 * 1000), pctDiff, confidence);
-                Console.WriteLine("$$$ cumulat delta {0:0.00} M instr ({1:0.00}%) confidence {2:0.00}",
-                    change0 / (1000 * 1000), pctDiff0, confidence0);
+                Console.Write("{0:30}  noinl {1:0.00}M delta {2:0.00}M ({3:0.00}%) confidence {4:0.00}",
+                    "", zeroAvg / (1000 * 1000), change0 / (1000 * 1000), pctDiff0, confidence0);
 
                 if (ccDelta != 0)
                 {
-                    Console.WriteLine("$$$ current delta {0:0.00} instr per call", change / ccDelta );
+                    Console.Write(" cc-delta {0} ipc {1:0.00}", ccDelta, change / ccDelta );
                 }
+
+                Console.WriteLine();
 
                 if (deltas != null)
                 {
@@ -1353,11 +1367,11 @@ namespace PerformanceExplorer
 
                 perfData.ExecutionTime[subName] = new List<double>(iExecutionTimes);
                 perfData.InstructionCount[subName] = new List<double>(iInstructionsRetired);
+            }
 
-                if (verbose)
-                {
-                    perfData.Summarize(subName, c.Name);
-                }
+            if (verbose)
+            {
+                perfData.Print(c.Name);
             }
 
             results.Success = (b.ExitCode == runnerProcess.ExitCode);
@@ -1395,9 +1409,9 @@ namespace PerformanceExplorer
             noInlineConfig.Environment["COMPlus_JitInlineLimit"] = "0";
             noInlineConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
-            Results results = r.RunBenchmark(b, noInlineConfig);
+            Results noInlineResults = r.RunBenchmark(b, noInlineConfig);
 
-            if (results == null || !results.Success)
+            if (noInlineResults == null || !noInlineResults.Success)
             {
                 Console.WriteLine("Noinline run failed\n");
                 return null;
@@ -1406,7 +1420,7 @@ namespace PerformanceExplorer
             // Parse noinline xml
             XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
             InlineForest f;
-            Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
+            Stream xmlFile = new FileStream(noInlineResults.LogFile, FileMode.Open);
             try
             {
                 f = (InlineForest)xml.Deserialize(xmlFile);
@@ -1419,7 +1433,7 @@ namespace PerformanceExplorer
 
             long inlineCount = f.Methods.Sum(m => m.InlineCount);
             Console.WriteLine("*** Noinline config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
-            results.InlineForest = f;
+            noInlineResults.InlineForest = f;
 
             // Determine set of unique method Ids and build map from ID to method
             Dictionary<MethodId, uint> idCounts = new Dictionary<MethodId, uint>();
@@ -1440,7 +1454,7 @@ namespace PerformanceExplorer
                 }
             }
 
-            results.Methods = methods;
+            noInlineResults.Methods = methods;
 
             Console.WriteLine("*** Noinline config has {0} unique method IDs", idCounts.Count);
 
@@ -1469,8 +1483,9 @@ namespace PerformanceExplorer
             noinlinePerfConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
             noinlinePerfConfig.Environment["COMPlus_JitInlineLimit"] = "0";
             Results perfResults = x.RunBenchmark(b, noinlinePerfConfig);
-            results.Performance = perfResults.Performance;
-            results.Performance.Print(noInlineConfig.Name);
+            Console.WriteLine("-- Updating noinline results");
+            noInlineResults.Performance = perfResults.Performance;
+            noInlineResults.Performance.Print(noInlineConfig.Name);
 
             // Get noinline method call counts
             // Todo: use xunit runner and capture stderr? Downside is that xunit-perf
@@ -1484,10 +1499,10 @@ namespace PerformanceExplorer
                 noInlineCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
                 Results ccResults = r.RunBenchmark(b, noInlineCallCountConfig);
 
-                AnnotateCallCounts(ccResults, results);
+                AnnotateCallCounts(ccResults, noInlineResults);
             }
 
-            return results;
+            return noInlineResults;
         }
 
         // The legacy model reflects the current jit behavior.
