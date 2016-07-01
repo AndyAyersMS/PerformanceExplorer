@@ -198,6 +198,10 @@ namespace PerformanceExplorer
         {
             return (this.Token == other.Token && this.Hash == other.Hash);
         }
+        public override string ToString()
+        {
+            return String.Format("{0:X8}-{1:X8}", Token, Hash);
+        }
 
         public override int GetHashCode()
         {
@@ -672,14 +676,14 @@ namespace PerformanceExplorer
                 kForest.Methods = new Method[1];
                 kForest.Methods[0] = rootMethod.ShallowCopy();
 
-                // Always explore methods with one possible inline, since checking to see if the
+                // Always explore methods with one or two possible inlines, since checking to see if the
                 // exploration is worthwhile costs just as much as doing the exploration.
                 //
                 // If there are multiple inlines, then jump to the end to see if any of them matter.
                 // If not then don't bother exploring the intermediate states.
                 //
                 // This might bias the exploration into visiting more good cases than "normal".
-                if (rootMethod.InlineCount > 1)
+                if (rootMethod.InlineCount > 2)
                 {
                     // See if any inline in the tree has a perf impact. If not, don't bother exploring.
                     ulong dontcare = 0;
@@ -698,7 +702,7 @@ namespace PerformanceExplorer
                 }
                 else
                 {
-                    Console.WriteLine("$$$ Single inline, exploring...");
+                    Console.WriteLine("$$$ Single/Double inline, exploring...");
                 }
 
                 // Keep track of the current call count for each method.
@@ -740,8 +744,7 @@ namespace PerformanceExplorer
                 }
                 else
                 {
-                    currentMethodName = String.Format("Token {0:X8} Hash {1:X8}",
-                        dd.inlineMethodId.Token, dd.inlineMethodId.Hash);
+                    currentMethodName = dd.inlineMethodId.ToString();
                 }
 
                 Console.Write("$$$ --- [{0,2:D2}] {1,12} -> {2,-12} {3,6:0.00}%",
@@ -768,6 +771,12 @@ namespace PerformanceExplorer
                     // resultsSet[0] is the noinline run. We don't have a <Data> entry
                     // for it, but key column values are spilled into the inline Xml and
                     // so deserialized into method entries.
+                    if (!baseResults.Methods.ContainsKey(methodId))
+                    {
+                        Console.WriteLine("!!! Odd -- no base data for root {0}", methodId);
+                        continue;
+                    }
+
                     int baseMethodHotSize = (int) baseResults.Methods[methodId].HotSize;
                     int baseMethodColdSize = (int) baseResults.Methods[methodId].ColdSize;
                     int baseMethodJitTime = (int) baseResults.Methods[methodId].JitTime;
@@ -787,7 +796,7 @@ namespace PerformanceExplorer
                         XElement root = XElement.Load(rK.LogFile);
 
                         // Look for the embedded inliner observation schema
-                        IEnumerable< XElement > schemas = from el in root.Descendants("DataSchema") select el;
+                        IEnumerable<XElement> schemas = from el in root.Descendants("DataSchema") select el;
                         XElement schema = schemas.First();
                         string schemaString = (string)schema;
                         // Add on the performance data column headers
@@ -838,7 +847,7 @@ namespace PerformanceExplorer
                         // Find the embededed inline observation data
                         IEnumerable<XElement> data = from el in root.Descendants("Data") select el;
                         string dataString = (string)data.First();
-                            string[] dataStringX = dataString.Split(comma);
+                        string[] dataStringX = dataString.Split(comma);
 
                         // Split out the observations that we need for extended info.
                         int currentMethodHotSize = hotSizeIndex >= 0 ? Int32.Parse(dataStringX[hotSizeIndex]) : 0;
@@ -853,6 +862,20 @@ namespace PerformanceExplorer
                         List<double> arKm1Data = null;
                         foreach (string subBench in rK.Performance.InstructionCount.Keys)
                         {
+                            if (!rK.Performance.InstructionCount.ContainsKey(subBench))
+                            {
+                                Console.WriteLine("!!! Odd -- no data for root {0} on {1} at index {2}",
+                                    methodId, subBench, i);
+                                continue;
+                            }
+
+                            if (!rKm1.Performance.InstructionCount.ContainsKey(subBench))
+                            {
+                                Console.WriteLine("!!! Odd -- no data for root {0} on {1} at index {2}",
+                                    methodId, subBench, i - 1);
+                                continue;
+                            }
+
                             List<double> rKData = rK.Performance.InstructionCount[subBench];
                             List<double> rKm1Data = rKm1.Performance.InstructionCount[subBench];
 
@@ -860,6 +883,12 @@ namespace PerformanceExplorer
                             {
                                 arKData = new List<double>(rKData);
                                 arKm1Data = new List<double>(rKm1Data);
+                                if (arKData.Count != arKm1Data.Count)
+                                {
+                                    Console.WriteLine("!!! Odd -- mismatched data for root {0} on {1} at index {2}",
+                                        methodId, subBench, i);
+                                    continue;
+                                }
                             }
                             else
                             {
@@ -1418,10 +1447,23 @@ namespace PerformanceExplorer
             Console.WriteLine("----");
             Console.WriteLine("---- No Inline Model for {0}", b.ShortName);
 
+            // Create empty inline replay XML
+            InlineForest emptyForest = new InlineForest();
+            emptyForest.Policy = "ReplayPolicy";
+            XmlSerializer emptySerializer = new XmlSerializer(typeof(InlineForest));
+            string emptyXmlFile = String.Format("{0}-empy-replay.xml", b.ShortName);
+            string emptyXmlPath = Path.Combine(Program.RESULTS_DIR, emptyXmlFile);
+            using (Stream emptyXmlStream = new FileStream(emptyXmlPath, FileMode.Create))
+            {
+                emptySerializer.Serialize(emptyXmlStream, emptyForest);
+            }
+
+            // Replay with empty xml and recapture the full noinline xml. Latter will
+            // show all the methods that were jitted.
             Configuration noInlineConfig = new Configuration("noinl");
             noInlineConfig.ResultsDirectory = Program.RESULTS_DIR;
-            noInlineConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
-            noInlineConfig.Environment["COMPlus_JitInlineLimit"] = "0";
+            noInlineConfig.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
+            noInlineConfig.Environment["COMPlus_JitInlineReplayFile"] = emptyXmlPath;
             noInlineConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
             Results noInlineResults = r.RunBenchmark(b, noInlineConfig);
@@ -1492,11 +1534,11 @@ namespace PerformanceExplorer
                 }
             }
 
-            // Get noinline perf numbers
+            // Get noinline perf numbers using empty replay xml
             Configuration noinlinePerfConfig = new Configuration("noinline-perf");
             noinlinePerfConfig.ResultsDirectory = Program.RESULTS_DIR;
-            noinlinePerfConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
-            noinlinePerfConfig.Environment["COMPlus_JitInlineLimit"] = "0";
+            noinlinePerfConfig.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
+            noinlinePerfConfig.Environment["COMPlus_JitInlineReplayFile"] = emptyXmlPath;
             Results perfResults = x.RunBenchmark(b, noinlinePerfConfig);
             Console.WriteLine("-- Updating noinline results");
             noInlineResults.Performance = perfResults.Performance;
@@ -1509,8 +1551,8 @@ namespace PerformanceExplorer
             {
                 Configuration noInlineCallCountConfig = new Configuration("noinline-cc");
                 noInlineCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
-                noInlineCallCountConfig.Environment["COMPlus_JitInlinePolicyDiscretionary"] = "1";
-                noInlineCallCountConfig.Environment["COMPlus_JitInlineLimit"] = "0";
+                noInlineCallCountConfig.Environment["COMPlus_JitInlinePolicyReplay"] = "1";
+                noInlineCallCountConfig.Environment["COMPlus_JitInlineReplayFile"] = emptyXmlPath;
                 noInlineCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
                 Results ccResults = r.RunBenchmark(b, noInlineCallCountConfig);
 
