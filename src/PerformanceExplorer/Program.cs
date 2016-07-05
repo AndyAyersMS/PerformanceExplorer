@@ -577,8 +577,8 @@ namespace PerformanceExplorer
             // Explore each method with inlines. Arbitrarily bail after some number of explorations.
             int methodsExplored = 0;
             int inlinesExplored = 0;
-            int perMethodExplorationLimit = 50;
-            int perBenchmarkExplorationLimit = 75;
+            int perMethodExplorationLimit =75;
+            int perBenchmarkExplorationLimit = 1000;
             List<Method> methodsToExplore = new List<Method>(endResults.Methods.Values);
             methodsToExplore.Sort(Method.HasMoreCalls);
 
