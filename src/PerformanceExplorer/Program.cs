@@ -804,7 +804,7 @@ namespace PerformanceExplorer
                             "Benchmark,SubBenchmark," +
                             schemaString + 
                             ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct" +
-                            ",CallDelta,InstRetiredPerCallDelta,InstRetiredPerRootCallDelta,Confidence";
+                            ",CallDelta,InstRetiredPerCallDelta,RootCallCount,InstRetiredPerRootCallDelta,Confidence";
 
                         // If we haven't yet emitted a local header, do so now.
                         if (!hasHeader)
@@ -914,17 +914,19 @@ namespace PerformanceExplorer
                         int coldSizeDelta = currentMethodColdSize - baseMethodColdSize;
                         int jitTimeDelta = currentMethodJitTime - baseMethodJitTime;
 
-                        dataModelFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00}",
+                        dataModelFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00},{12:0.00}",
                             benchmark.ShortName, "agg",
                             dataString,
                             hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                            change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, perRootDelta, confidence);
+                            change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, 
+                            baseMethodCallCount, perRootDelta, confidence);
 
-                        combinedDataFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00}",
+                        combinedDataFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00},{12:0.00}",
                             benchmark.ShortName, "agg",
                             dataString,
                             hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                            change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, perRootDelta, confidence);
+                            change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, 
+                            baseMethodCallCount, perRootDelta, confidence);
 
                         baseMethodHotSize = currentMethodHotSize;
                         baseMethodColdSize = currentMethodColdSize;
