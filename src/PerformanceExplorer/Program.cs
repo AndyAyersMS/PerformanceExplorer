@@ -303,10 +303,10 @@ namespace PerformanceExplorer
 
             // DFS to copy with the list telling us
             // what to include.
-            return GetDfsSubtree(Inlines, l);
+            return GetDfsSubtree(Inlines, l, lastInline);
         }
 
-        Inline[] GetDfsSubtree(Inline[] inlines, List<Inline> filter)
+        Inline[] GetDfsSubtree(Inline[] inlines, List<Inline> filter, Inline lastInline)
         {
             List<Inline> newInlines = new List<Inline>();
             foreach (Inline x in inlines)
@@ -314,8 +314,12 @@ namespace PerformanceExplorer
                 if (filter.Contains(x))
                 {
                     Inline xn = x.ShallowCopy();
+                    if (x == lastInline)
+                    {
+                        xn.IsLast = 1;
+                    }
                     newInlines.Add(xn);
-                    xn.Inlines = GetDfsSubtree(x.Inlines, filter);
+                    xn.Inlines = GetDfsSubtree(x.Inlines, filter, lastInline);
                 }
             }
 
@@ -446,6 +450,7 @@ namespace PerformanceExplorer
         public uint Token;
         public uint Hash;
         public uint Offset;
+        public uint IsLast;
         public string Reason;
         public Inline[] Inlines;
 
@@ -453,9 +458,10 @@ namespace PerformanceExplorer
         {
             Inline x = new Inline();
             x.Token = Token;
-            x.Offset = Offset;
             x.Hash = Hash;
+            x.Offset = Offset;
             x.Reason = Reason;
+            x.IsLast = 0;
             x.Inlines = new Inline[0];
             return x;
         }
