@@ -577,8 +577,8 @@ namespace PerformanceExplorer
             // Explore each method with inlines. Arbitrarily bail after some number of explorations.
             int methodsExplored = 0;
             int inlinesExplored = 0;
-            int perMethodExplorationLimit =75;
-            int perBenchmarkExplorationLimit = 1000;
+            int perMethodExplorationLimit = 25;
+            int perBenchmarkExplorationLimit = 100;
             List<Method> methodsToExplore = new List<Method>(endResults.Methods.Values);
             methodsToExplore.Sort(Method.HasMoreCalls);
 
@@ -1368,8 +1368,13 @@ namespace PerformanceExplorer
             runnerProcess.StartInfo.Environment["CORE_ROOT"] = sandboxDir;
             runnerProcess.StartInfo.Environment["XUNIT_PERFORMANCE_MIN_ITERATION"] = Program.MinIterations.ToString();
             runnerProcess.StartInfo.Environment["XUNIT_PERFORMANCE_MAX_ITERATION"] = Program.MaxIterations.ToString();
-            runnerProcess.StartInfo.Arguments = benchmarkFile + 
-                " -nologo -runner xunit.console.netcore.exe -runnerhost corerun.exe -runid " + perfName;
+
+            runnerProcess.StartInfo.Arguments = benchmarkFile +
+                " -nologo -runner xunit.console.netcore.exe -runnerhost corerun.exe -runid " +
+                perfName +
+                (Program.ClassFilter == null ? "" : " -class " + Program.ClassFilter) +
+                (Program.MethodFilter == null ? "" : " -method " + Program.MethodFilter);
+            
             runnerProcess.StartInfo.WorkingDirectory = sandboxDir;
             runnerProcess.StartInfo.UseShellExecute = false;
 
@@ -1829,32 +1834,53 @@ namespace PerformanceExplorer
             modelConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
             modelConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
-            Results results = r.RunBenchmark(b, modelConfig);
+            Results modelResults = r.RunBenchmark(b, modelConfig);
 
-            if (results == null || !results.Success)
+            if (modelResults == null || !modelResults.Success)
             {
                 Console.WriteLine("{0} run failed\n", modelConfig.Name);
                 return null;
             }
 
             XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
-            InlineForest f;
-            Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
-            f = (InlineForest)xml.Deserialize(xmlFile);
+            Stream xmlFile = new FileStream(modelResults.LogFile, FileMode.Open);
+            InlineForest f = (InlineForest)xml.Deserialize(xmlFile);
             long inlineCount = f.Methods.Sum(m => m.InlineCount);
             Console.WriteLine("*** {0} config has {1} methods, {2} inlines",
                 modelConfig.Name, f.Methods.Length, inlineCount);
-            results.InlineForest = f;
+            modelResults.InlineForest = f;
+
+            // Populate the methodId -> method lookup table
+            Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
+            foreach (Method m in f.Methods)
+            {
+                MethodId id = m.getId();
+                methods[id] = m;
+            }
+            modelResults.Methods = methods;
 
             // Now get perf numbers
             Configuration modelPerfConfig = new Configuration("model-perf");
             modelPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
             modelPerfConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
             Results perfResults = x.RunBenchmark(b, modelPerfConfig);
-            results.Performance = perfResults.Performance;
-            results.Performance.Print(modelConfig.Name);
+            modelResults.Performance = perfResults.Performance;
+            modelResults.Performance.Print(modelConfig.Name);
 
-            return results;
+            // Get method call counts
+            if (CaptureCallCounts)
+            {
+                Configuration modelCallCountConfig = new Configuration("model-cc");
+                modelCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
+                modelCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
+                modelCallCountConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
+                Results ccResults = r.RunBenchmark(b, modelCallCountConfig);
+
+                // Parse results back and annotate base method set
+                AnnotateCallCounts(ccResults, modelResults);
+            }
+
+            return modelResults;
         }
 
         // The size model tries not to increase method size
@@ -1928,6 +1954,8 @@ namespace PerformanceExplorer
         public static bool SkipProblemBenchmarks = true;
         public static uint MinIterations = 5;
         public static uint MaxIterations = 5;
+        public static string ClassFilter = null;
+        public static string MethodFilter = null;
 
         public static List<string> ParseArgs(string[] args)
         {
@@ -1975,6 +2003,14 @@ namespace PerformanceExplorer
                     else if (arg == "-maxIterations" && (i + 1) < args.Length)
                     {
                         MaxIterations = UInt32.Parse(args[++i]);
+                    }
+                    else if (arg == "-method" && (i + 1) < args.Length)
+                    {
+                        MethodFilter = args[++i];
+                    }
+                    else if (arg == "-class" && (i + 1) < args.Length)
+                    {
+                        ClassFilter = args[++i];
                     }
                     else
                     {
