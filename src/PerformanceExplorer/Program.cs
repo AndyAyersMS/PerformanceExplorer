@@ -314,9 +314,11 @@ namespace PerformanceExplorer
                 if (filter.Contains(x))
                 {
                     Inline xn = x.ShallowCopy();
+                    // Flag the last inline so the jit can collect
+                    // data for it during replay.
                     if (x == lastInline)
                     {
-                        xn.IsLast = 1;
+                        xn.CollectData = 1;
                     }
                     newInlines.Add(xn);
                     xn.Inlines = GetDfsSubtree(x.Inlines, filter, lastInline);
@@ -450,7 +452,7 @@ namespace PerformanceExplorer
         public uint Token;
         public uint Hash;
         public uint Offset;
-        public uint IsLast;
+        public uint CollectData;
         public string Reason;
         public Inline[] Inlines;
 
@@ -461,7 +463,7 @@ namespace PerformanceExplorer
             x.Hash = Hash;
             x.Offset = Offset;
             x.Reason = Reason;
-            x.IsLast = 0;
+            x.CollectData = 0;
             x.Inlines = new Inline[0];
             return x;
         }
