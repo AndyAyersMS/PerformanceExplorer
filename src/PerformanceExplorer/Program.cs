@@ -585,8 +585,8 @@ namespace PerformanceExplorer
             // Explore each method with inlines. Arbitrarily bail after some number of explorations.
             int methodsExplored = 0;
             int inlinesExplored = 0;
-            int perMethodExplorationLimit = 25;
-            int perBenchmarkExplorationLimit = 100;
+            int perMethodExplorationLimit = 50;
+            int perBenchmarkExplorationLimit = 1000;
             List<Method> methodsToExplore = new List<Method>(endResults.Methods.Values);
             methodsToExplore.Sort(Method.HasMoreCalls);
 
@@ -601,6 +601,12 @@ namespace PerformanceExplorer
                 if (endCount == 0)
                 {
                     Console.WriteLine("$$$ Skipping -- no inlines");
+                    continue;
+                }
+
+                if ((Program.RootToken != null) && rootMethod.Token != Program.RootTokenValue)
+                {
+                    Console.WriteLine("$$$ Skipping -- does not match specified root token {0}", Program.RootToken);
                     continue;
                 }
 
@@ -811,7 +817,7 @@ namespace PerformanceExplorer
                         string extendedSchemaString = 
                             "Benchmark,SubBenchmark," +
                             schemaString + 
-                            ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetiredPct" +
+                            ",HotSizeDelta,ColdSizeDelta,JitTimeDelta,InstRetiredDelta,InstRetired,InstRetiredSD" +
                             ",CallDelta,InstRetiredPerCallDelta,RootCallCount,InstRetiredPerRootCallDelta,Confidence";
 
                         // If we haven't yet emitted a local header, do so now.
@@ -874,14 +880,14 @@ namespace PerformanceExplorer
                             {
                                 Console.WriteLine("!!! Odd -- no data for root {0} on {1} at index {2}",
                                     methodId, subBench, i);
-                                continue;
+                                break;
                             }
 
                             if (!rKm1.Performance.InstructionCount.ContainsKey(subBench))
                             {
                                 Console.WriteLine("!!! Odd -- no data for root {0} on {1} at index {2}",
                                     methodId, subBench, i - 1);
-                                continue;
+                                break;
                             }
 
                             List<double> rKData = rK.Performance.InstructionCount[subBench];
@@ -889,17 +895,21 @@ namespace PerformanceExplorer
 
                             if (arKData == null)
                             {
-                                arKData = new List<double>(rKData);
-                                arKm1Data = new List<double>(rKm1Data);
-                                if (arKData.Count != arKm1Data.Count)
+                                // Occasionally we'll lose xunit perf data, for reasons unknown
+                                if (rKData.Count != rKm1Data.Count)
                                 {
                                     Console.WriteLine("!!! Odd -- mismatched data for root {0} on {1} at index {2}",
                                         methodId, subBench, i);
-                                    continue;
+                                    break;
                                 }
+
+                                // Copy first sub bench's data
+                                arKData = new List<double>(rKData);
+                                arKm1Data = new List<double>(rKm1Data);
                             }
                             else
                             {
+                                // Accumulate remainder
                                 for (int ii = 0; ii < arKData.Count; ii++)
                                 {
                                     arKData[ii] += rKData[ii];
@@ -908,11 +918,17 @@ namespace PerformanceExplorer
                             }
                         }
 
+                        if (arKData == null)
+                        {
+                            Console.WriteLine("!!! bailing out on index {0}", i);
+                            continue;
+                        }
+
                         double confidence = PerformanceData.Confidence(arKData, arKm1Data);
                         double arKAvg = PerformanceData.Average(arKData);
                         double arKm1Avg = PerformanceData.Average(arKm1Data);
+                        double arKSD = PerformanceData.StdDeviation(arKData);
                         double change = arKAvg - arKm1Avg;
-                        double pctDiff = 100.0 * change / arKm1Avg;
                         // Number of instructions saved per call to the current inlinee
                         double perCallDelta = (currentCCDelta == 0) ? 0 : change / currentCCDelta;
                         // Number of instructions saved per call to the root method
@@ -921,19 +937,20 @@ namespace PerformanceExplorer
                         int hotSizeDelta = currentMethodHotSize - baseMethodHotSize;
                         int coldSizeDelta = currentMethodColdSize - baseMethodColdSize;
                         int jitTimeDelta = currentMethodJitTime - baseMethodJitTime;
+                        int oneMillion = 1000 * 1000;
 
-                        dataModelFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00},{12:0.00}",
+                        dataModelFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00},{12:0.00},{13:0.00}",
                             benchmark.ShortName, "agg",
                             dataString,
                             hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                            change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, 
+                            change / oneMillion, arKAvg / oneMillion, arKSD/ oneMillion, currentCCDelta, perCallDelta, 
                             baseMethodCallCount, perRootDelta, confidence);
 
-                        combinedDataFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00},{12:0.00}",
+                        combinedDataFile.WriteLine("{0},{1},{2},{3},{4},{5},{6:0.00},{7:0.00},{8:0.00},{9:0.00},{10:0.00},{11:0.00},{12:0.00},{13:0.00}",
                             benchmark.ShortName, "agg",
                             dataString,
                             hotSizeDelta, coldSizeDelta, jitTimeDelta,
-                            change / (1000 * 1000), pctDiff, currentCCDelta, perCallDelta, 
+                            change / oneMillion, arKAvg / oneMillion, arKSD / oneMillion, currentCCDelta, perCallDelta, 
                             baseMethodCallCount, perRootDelta, confidence);
 
                         baseMethodHotSize = currentMethodHotSize;
@@ -1832,14 +1849,17 @@ namespace PerformanceExplorer
 
         // The "model" model uses heuristics based on modelling actual
         // observations
-        Results BuildModelModel(Runner r, Runner x, Benchmark b)
+        Results BuildModelModel(Runner r, Runner x, Benchmark b, bool altModel = false)
         {
-            Console.WriteLine("----");
-            Console.WriteLine("---- Model Model for {0}", b.ShortName);
+            string modelName = "Model" + (altModel ? "2" : "");
+            string variant = altModel ? "2" : "1";
 
-            Configuration modelConfig = new Configuration("model");
+            Console.WriteLine("----");
+            Console.WriteLine("---- {0} Model for {1}", modelName, b.ShortName);
+
+            Configuration modelConfig = new Configuration("modelName");
             modelConfig.ResultsDirectory = Program.RESULTS_DIR;
-            modelConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
+            modelConfig.Environment["COMPlus_JitInlinePolicyModel"] = variant;
             modelConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
             Results modelResults = r.RunBenchmark(b, modelConfig);
@@ -1870,7 +1890,7 @@ namespace PerformanceExplorer
             // Now get perf numbers
             Configuration modelPerfConfig = new Configuration("model-perf");
             modelPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
-            modelPerfConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
+            modelPerfConfig.Environment["COMPlus_JitInlinePolicyModel"] = variant;
             Results perfResults = x.RunBenchmark(b, modelPerfConfig);
             modelResults.Performance = perfResults.Performance;
             modelResults.Performance.Print(modelConfig.Name);
@@ -1956,14 +1976,17 @@ namespace PerformanceExplorer
         public static bool UseLegacyModel = true;
         public static bool UseFullModel = false;
         public static bool UseModelModel = false;
+        public static bool UseAltModel = false;
         public static bool UseSizeModel = false;
         public static bool ExploreInlines = true;
         public static bool CaptureCallCounts = true;
         public static bool SkipProblemBenchmarks = true;
-        public static uint MinIterations = 5;
-        public static uint MaxIterations = 5;
+        public static uint MinIterations = 10;
+        public static uint MaxIterations = 10;
         public static string ClassFilter = null;
         public static string MethodFilter = null;
+        public static string RootToken = null;
+        public static uint RootTokenValue = 0;
 
         public static List<string> ParseArgs(string[] args)
         {
@@ -2004,6 +2027,10 @@ namespace PerformanceExplorer
                     {
                         UseModelModel = true;
                     }
+                    else if (arg == "-useAltModel")
+                    {
+                        UseAltModel = true;
+                    }
                     else if (arg == "-minIterations" && (i + 1) < args.Length)
                     {
                         MinIterations = UInt32.Parse(args[++i]);
@@ -2019,6 +2046,11 @@ namespace PerformanceExplorer
                     else if (arg == "-class" && (i + 1) < args.Length)
                     {
                         ClassFilter = args[++i];
+                    }
+                    else if (arg == "-rootToken" && (i + 1) < args.Length)
+                    {
+                        RootToken = args[++i];
+                        RootTokenValue = UInt32.Parse(RootToken, System.Globalization.NumberStyles.HexNumber);
                     }
                     else
                     {
@@ -2251,6 +2283,17 @@ namespace PerformanceExplorer
                         continue;
                     }
                     benchmarkResults.Add(modelResults);
+                }
+                
+                if (UseAltModel)
+                {
+                    Results altModelResults = BuildModelModel(r, x, b, true);
+                    if (altModelResults == null)
+                    {
+                        Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                        continue;
+                    }
+                    benchmarkResults.Add(altModelResults);
                 }
 
                 if (UseSizeModel)
