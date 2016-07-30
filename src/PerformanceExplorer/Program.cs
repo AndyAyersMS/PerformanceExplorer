@@ -1506,63 +1506,66 @@ namespace PerformanceExplorer
                 return null;
             }
 
-            // Parse noinline xml
-            XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
-            InlineForest f;
-            Stream xmlFile = new FileStream(noInlineResults.LogFile, FileMode.Open);
-            try
+            if (Program.ExploreInlines)
             {
-                f = (InlineForest)xml.Deserialize(xmlFile);
-            }
-            catch (System.Exception ex)
-            {
-                Console.WriteLine("Xml deserialization failed: " + ex.Message);
-                return null;
-            }
-
-            long inlineCount = f.Methods.Sum(m => m.InlineCount);
-            Console.WriteLine("*** Noinline config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
-            noInlineResults.InlineForest = f;
-
-            // Determine set of unique method Ids and build map from ID to method
-            Dictionary<MethodId, uint> idCounts = new Dictionary<MethodId, uint>();
-            Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
-
-            foreach (Method m in f.Methods)
-            {
-                MethodId id = m.getId();
-                methods[id] = m;
-
-                if (idCounts.ContainsKey(id))
+                // Parse noinline xml
+                XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
+                InlineForest f;
+                Stream xmlFile = new FileStream(noInlineResults.LogFile, FileMode.Open);
+                try
                 {
-                    idCounts[id]++;
+                    f = (InlineForest)xml.Deserialize(xmlFile);
                 }
-                else
+                catch (System.Exception ex)
                 {
-                    idCounts[id] = 1;
+                    Console.WriteLine("Xml deserialization failed: " + ex.Message);
+                    return null;
                 }
-            }
 
-            noInlineResults.Methods = methods;
+                long inlineCount = f.Methods.Sum(m => m.InlineCount);
+                Console.WriteLine("*** Noinline config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
+                noInlineResults.InlineForest = f;
 
-            Console.WriteLine("*** Noinline config has {0} unique method IDs", idCounts.Count);
+                // Determine set of unique method Ids and build map from ID to method
+                Dictionary<MethodId, uint> idCounts = new Dictionary<MethodId, uint>();
+                Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
 
-            foreach (MethodId m in idCounts.Keys)
-            {
-                uint count = idCounts[m];
-                if (count > 1)
+                foreach (Method m in f.Methods)
                 {
-                    Console.WriteLine("*** MethodId Token:0x{0:X8} Hash:0x{1:X8} has {2} duplicates", m.Token, m.Hash, count);
+                    MethodId id = m.getId();
+                    methods[id] = m;
+
+                    if (idCounts.ContainsKey(id))
+                    {
+                        idCounts[id]++;
+                    }
+                    else
+                    {
+                        idCounts[id] = 1;
+                    }
                 }
-            }
 
-            // Mark methods in noinline results that do not have unique IDs
-            foreach (Method m in f.Methods)
-            {
-                MethodId id = m.getId();
-                if (idCounts[id] > 1)
+                noInlineResults.Methods = methods;
+
+                Console.WriteLine("*** Noinline config has {0} unique method IDs", idCounts.Count);
+
+                foreach (MethodId m in idCounts.Keys)
                 {
-                    m.MarkAsDuplicate();
+                    uint count = idCounts[m];
+                    if (count > 1)
+                    {
+                        Console.WriteLine("*** MethodId Token:0x{0:X8} Hash:0x{1:X8} has {2} duplicates", m.Token, m.Hash, count);
+                    }
+                }
+
+                // Mark methods in noinline results that do not have unique IDs
+                foreach (Method m in f.Methods)
+                {
+                    MethodId id = m.getId();
+                    if (idCounts[id] > 1)
+                    {
+                        m.MarkAsDuplicate();
+                    }
                 }
             }
 
@@ -1597,14 +1600,19 @@ namespace PerformanceExplorer
         // The legacy model reflects the current jit behavior.
         // Scoring of runs will be relative to this data.
         // The inherent noise level is also estimated here.
-        Results BuildLegacyModel(Runner r, Runner x, Benchmark b)
+        Results BuildLegacyModel(Runner r, Runner x, Benchmark b, bool enhanced = false)
         {
+            string modelName = enhanced ? "EnhancedLegacy" : "Legacy";
             Console.WriteLine("----");
-            Console.WriteLine("---- Legacy Model for {0}", b.ShortName);
+            Console.WriteLine("---- {0} Model for {1}", modelName, b.ShortName);
 
-            Configuration legacyConfig = new Configuration("legacy");
+            Configuration legacyConfig = new Configuration(modelName);
             legacyConfig.ResultsDirectory = Program.RESULTS_DIR;
             legacyConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
+            if (!enhanced)
+            {
+                legacyConfig.Environment["COMPlus_JitInlinePolicyLegacy"] = "1";
+            }
 
             Results legacyResults = r.RunBenchmark(b, legacyConfig);
 
@@ -1614,25 +1622,32 @@ namespace PerformanceExplorer
                 return null;
             }
 
-            XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
-            InlineForest f;
-            Stream xmlFile = new FileStream(legacyResults.LogFile, FileMode.Open);
-            f = (InlineForest) xml.Deserialize(xmlFile);
-            long inlineCount = f.Methods.Sum(m => m.InlineCount);
-            Console.WriteLine("*** Legacy config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
-            legacyResults.InlineForest = f;
-
-            // Populate the methodId -> method lookup table
-            Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
-            foreach (Method m in f.Methods)
+            if (Program.ExploreInlines)
             {
-                MethodId id = m.getId();
-                methods[id] = m;
+                XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
+                InlineForest f;
+                Stream xmlFile = new FileStream(legacyResults.LogFile, FileMode.Open);
+                f = (InlineForest)xml.Deserialize(xmlFile);
+                long inlineCount = f.Methods.Sum(m => m.InlineCount);
+                Console.WriteLine("*** Legacy config has {0} methods, {1} inlines", f.Methods.Length, inlineCount);
+                legacyResults.InlineForest = f;
+
+                // Populate the methodId -> method lookup table
+                Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
+                foreach (Method m in f.Methods)
+                {
+                    MethodId id = m.getId();
+                    methods[id] = m;
+                }
+                legacyResults.Methods = methods;
             }
-            legacyResults.Methods = methods;
 
             // Now get legacy perf numbers
             Configuration legacyPerfConfig = new Configuration("legacy-perf");
+            if (!enhanced)
+            {
+                legacyPerfConfig.Environment["COMPlus_JitInlinePolicyLegacy"] = "1";
+            }
             legacyPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
             Results perfResults = x.RunBenchmark(b, legacyPerfConfig);
             legacyResults.Performance = perfResults.Performance;
@@ -1644,6 +1659,10 @@ namespace PerformanceExplorer
                 Configuration legacyCallCountConfig = new Configuration("legacy-cc");
                 legacyCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
                 legacyCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
+                if (!enhanced)
+                {
+                    legacyCallCountConfig.Environment["COMPlus_JitInlinePolicyLegacy"] = "1";
+                }
                 Results ccResults = r.RunBenchmark(b, legacyCallCountConfig);
 
                 // Parse results back and annotate base method set
@@ -1870,22 +1889,25 @@ namespace PerformanceExplorer
                 return null;
             }
 
-            XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
-            Stream xmlFile = new FileStream(modelResults.LogFile, FileMode.Open);
-            InlineForest f = (InlineForest)xml.Deserialize(xmlFile);
-            long inlineCount = f.Methods.Sum(m => m.InlineCount);
-            Console.WriteLine("*** {0} config has {1} methods, {2} inlines",
-                modelConfig.Name, f.Methods.Length, inlineCount);
-            modelResults.InlineForest = f;
-
-            // Populate the methodId -> method lookup table
-            Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
-            foreach (Method m in f.Methods)
+            if (Program.ExploreInlines)
             {
-                MethodId id = m.getId();
-                methods[id] = m;
+                XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
+                Stream xmlFile = new FileStream(modelResults.LogFile, FileMode.Open);
+                InlineForest f = (InlineForest)xml.Deserialize(xmlFile);
+                long inlineCount = f.Methods.Sum(m => m.InlineCount);
+                Console.WriteLine("*** {0} config has {1} methods, {2} inlines",
+                    modelConfig.Name, f.Methods.Length, inlineCount);
+                modelResults.InlineForest = f;
+
+                // Populate the methodId -> method lookup table
+                Dictionary<MethodId, Method> methods = new Dictionary<MethodId, Method>(f.Methods.Length);
+                foreach (Method m in f.Methods)
+                {
+                    MethodId id = m.getId();
+                    methods[id] = m;
+                }
+                modelResults.Methods = methods;
             }
-            modelResults.Methods = methods;
 
             // Now get perf numbers
             Configuration modelPerfConfig = new Configuration("model-perf");
@@ -1974,6 +1996,7 @@ namespace PerformanceExplorer
         // Various aspects of the exploration that can be enabled/disabled.
         // Todo: Make this configurable.
         public static bool UseLegacyModel = true;
+        public static bool UseEnhancedLegacyModel = false;
         public static bool UseFullModel = false;
         public static bool UseModelModel = false;
         public static bool UseAltModel = false;
@@ -2010,6 +2033,10 @@ namespace PerformanceExplorer
                     else if (arg == "-noLegacy")
                     {
                         UseLegacyModel = false;
+                    }
+                    else if (arg == "-useEnhancedLegacy")
+                    {
+                        UseEnhancedLegacyModel = true;
                     }
                     else if (arg == "-noExplore")
                     {
@@ -2256,6 +2283,17 @@ namespace PerformanceExplorer
                         Console.WriteLine("Odd, benchmark has no perf data. Skipping");
                         continue;
                     }
+                }
+
+                if (UseEnhancedLegacyModel)
+                {
+                    Results enhancedLegacyResults = BuildLegacyModel(r, x, b, true);
+                    if (enhancedLegacyResults == null)
+                    {
+                        Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                        continue;
+                    }
+                    benchmarkResults.Add(enhancedLegacyResults);
                 }
 
                 if (UseFullModel)
