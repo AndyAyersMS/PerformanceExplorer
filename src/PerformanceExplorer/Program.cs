@@ -1643,7 +1643,7 @@ namespace PerformanceExplorer
             }
 
             // Now get legacy perf numbers
-            Configuration legacyPerfConfig = new Configuration("legacy-perf");
+            Configuration legacyPerfConfig = new Configuration(modelName + "-perf");
             if (!enhanced)
             {
                 legacyPerfConfig.Environment["COMPlus_JitInlinePolicyLegacy"] = "1";
@@ -1656,7 +1656,7 @@ namespace PerformanceExplorer
             // Get legacy method call counts
             if (CaptureCallCounts)
             {
-                Configuration legacyCallCountConfig = new Configuration("legacy-cc");
+                Configuration legacyCallCountConfig = new Configuration(modelName + "cc");
                 legacyCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
                 legacyCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
                 if (!enhanced)
@@ -1876,7 +1876,7 @@ namespace PerformanceExplorer
             Console.WriteLine("----");
             Console.WriteLine("---- {0} Model for {1}", modelName, b.ShortName);
 
-            Configuration modelConfig = new Configuration("modelName");
+            Configuration modelConfig = new Configuration(modelName);
             modelConfig.ResultsDirectory = Program.RESULTS_DIR;
             modelConfig.Environment["COMPlus_JitInlinePolicyModel"] = variant;
             modelConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
@@ -1910,7 +1910,7 @@ namespace PerformanceExplorer
             }
 
             // Now get perf numbers
-            Configuration modelPerfConfig = new Configuration("model-perf");
+            Configuration modelPerfConfig = new Configuration(modelName + "-perf");
             modelPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
             modelPerfConfig.Environment["COMPlus_JitInlinePolicyModel"] = variant;
             Results perfResults = x.RunBenchmark(b, modelPerfConfig);
@@ -1920,7 +1920,7 @@ namespace PerformanceExplorer
             // Get method call counts
             if (CaptureCallCounts)
             {
-                Configuration modelCallCountConfig = new Configuration("model-cc");
+                Configuration modelCallCountConfig = new Configuration(modelName + "-cc");
                 modelCallCountConfig.ResultsDirectory = Program.RESULTS_DIR;
                 modelCallCountConfig.Environment["COMPlus_JitMeasureEntryCounts"] = "1";
                 modelCallCountConfig.Environment["COMPlus_JitInlinePolicyModel"] = "1";
