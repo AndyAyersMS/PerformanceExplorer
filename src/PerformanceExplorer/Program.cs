@@ -2360,43 +2360,72 @@ namespace PerformanceExplorer
                 }
             }
 
-            bool first = true;
-            foreach(List<Results> rr in aggregateResults)
+            // aggregateResults is a list of list of results
+            // outer list is one per "benchmark"
+            // inner list is one per model
+            // .. a benchmark may have multiple parts
+
+            Console.WriteLine("---- Perf Results----");
+            Console.Write("{0,-42}", "Test");
+            int modelCount = 0;
+            foreach (Results rq in aggregateResults.First())
             {
-                ComparePerf(rr, first);
-                first = false;
+                Console.Write(" {0,8}.T {0,8}.I", rq.Name);
+                modelCount += 1;
+            }
+            Console.WriteLine();
+
+            int totalPartCount = 0;
+            foreach (List<Results> rr in aggregateResults)
+            {
+                Results f = rr.First();
+                totalPartCount += f.Performance.InstructionCount.Count;
+            }
+
+            double[] timeLogSum = new double[modelCount];
+            double[] instrLogSum = new double[modelCount];
+
+            foreach (List<Results> rr in aggregateResults)
+            {
+                ComparePerf(rr, timeLogSum, instrLogSum);
+            }
+
+            Console.Write("{0,-42}", "GeoMeans");
+            for (int j = 0; j < modelCount; j++)
+            {
+                double gmTime = Math.Exp(timeLogSum[j] / totalPartCount);
+                Console.Write(" {0,10:0.00}", gmTime);
+
+                double gmInstr = Math.Exp(instrLogSum[j] / totalPartCount);
+                Console.Write(" {0,10:0.00}", gmInstr);
             }
 
             return 100;
         }
 
-        void ComparePerf(List<Results> results, bool showHeader = true)
+        void ComparePerf(List<Results> results, double[] timeLogSum, double[] instrLogSum)
         {
             Results baseline = results.First();
-
-            if (showHeader)
-            {
-                Console.WriteLine("---- Perf Results----");
-                Console.Write("{0,-42}", "Test");
-                foreach (Results r in results)
-                {
-                    Console.Write(" {0,8}.T {0,8}.I", r.Name);
-                }
-                Console.WriteLine();
-            }
 
             foreach (string subBench in baseline.Performance.ExecutionTime.Keys)
             {
                 Console.Write("{0,-42}", subBench);
 
+                int modelNumber = 0;
+
                 foreach (Results diff in results)
                 {
                     double diffTime = PerformanceData.Average(diff.Performance.ExecutionTime[subBench]);
                     Console.Write(" {0,10:0.00}", diffTime);
+
                     double diffInst = PerformanceData.Average(diff.Performance.InstructionCount[subBench]);
                     Console.Write(" {0,10:0.00}", diffInst / (1000 * 1000));
-                }
 
+                    timeLogSum[modelNumber] += Math.Log(diffTime);
+                    instrLogSum[modelNumber] += Math.Log(diffInst / (1000 * 1000));
+
+                    modelNumber++;
+                }
                 Console.WriteLine();
             }
         }
