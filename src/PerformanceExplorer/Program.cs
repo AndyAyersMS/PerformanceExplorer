@@ -2029,8 +2029,8 @@ namespace PerformanceExplorer
 
         // Various aspects of the exploration that can be enabled/disabled.
         public static bool DisableZap = false;
-        public static bool UseNoInlineModel = true;
-        public static bool UseLegacyModel = true;
+        public static bool UseNoInlineModel = false;
+        public static bool UseLegacyModel = false;
         public static bool UseEnhancedLegacyModel = false;
         public static bool UseFullModel = false;
         public static bool UseModelModel = false;
@@ -2071,21 +2071,17 @@ namespace PerformanceExplorer
                     {
                         SkipProblemBenchmarks = false;
                     }
-                    else if (arg == "-noNoInline")
+                    else if (arg == "-useNoInline")
                     {
-                        UseNoInlineModel = false;
+                        UseNoInlineModel = true;
                     }
-                    else if (arg == "-noLegacy")
+                    else if (arg == "-useLegacy")
                     {
-                        UseLegacyModel = false;
+                        UseLegacyModel = true;
                     }
                     else if (arg == "-useEnhancedLegacy")
                     {
                         UseEnhancedLegacyModel = true;
-                    }
-                    else if (arg == "-noExplore")
-                    {
-                        ExploreInlines = false;
                     }
                     else if (arg == "-useFull")
                     {
@@ -2102,6 +2098,10 @@ namespace PerformanceExplorer
                     else if (arg == "-useAltModel")
                     {
                         UseAltModel = true;
+                    }
+                    else if (arg == "-noExplore")
+                    {
+                        ExploreInlines = false;
                     }
                     else if (arg == "-minIterations" && (i + 1) < args.Length)
                     {
@@ -2135,10 +2135,35 @@ namespace PerformanceExplorer
                 }
             }
 
-            // Exploration should at least run a noinline model
+            bool hasInlineModel =
+                UseLegacyModel ||
+                UseEnhancedLegacyModel ||
+                UseModelModel ||
+                UseAltModel ||
+                UseFullModel ||
+                UseSizeModel;
+
             if (ExploreInlines)
             {
-                UseNoInlineModel = true;
+                // Exploration should at least run a noinline model
+                if (!UseNoInlineModel)
+                {
+                    Console.Write("... exploration: forcibly enabling NoInlineModel");
+                    UseNoInlineModel = true;
+                }
+
+                // If no alternate models are selected, forcibly enable the full model.
+                if (!hasInlineModel)
+                {
+                    Console.Write("... exploration: forcibly enabling FullModel");
+                    UseFullModel = true;
+                }
+            }
+            else if (!(hasInlineModel || UseNoInlineModel))
+            {
+                // perf should run at least one model. Choose current default.
+                Console.Write("... perf: forcibly enabling EnhancedLegacyModel");
+                UseEnhancedLegacyModel = true;
             }
 
             return benchNames;
