@@ -2029,6 +2029,7 @@ namespace PerformanceExplorer
 
         // Various aspects of the exploration that can be enabled/disabled.
         public static bool DisableZap = false;
+        public static bool UseNoInlineModel = true;
         public static bool UseLegacyModel = true;
         public static bool UseEnhancedLegacyModel = false;
         public static bool UseFullModel = false;
@@ -2069,6 +2070,10 @@ namespace PerformanceExplorer
                     else if (arg == "-allTests")
                     {
                         SkipProblemBenchmarks = false;
+                    }
+                    else if (arg == "-noNoInline")
+                    {
+                        UseNoInlineModel = false;
                     }
                     else if (arg == "-noLegacy")
                     {
@@ -2128,6 +2133,12 @@ namespace PerformanceExplorer
                 {
                     benchNames.Add(arg);
                 }
+            }
+
+            // Exploration should at least run a noinline model
+            if (ExploreInlines)
+            {
+                UseNoInlineModel = true;
             }
 
             return benchNames;
@@ -2303,13 +2314,18 @@ namespace PerformanceExplorer
                 b.FullPath = s;
                 b.ExitCode = 100;
 
-                Results noInlineResults = BuildNoInlineModel(r, x, b);
-                if (noInlineResults == null)
+                Results noInlineResults = null;
+
+                if (UseNoInlineModel)
                 {
-                    Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
-                    continue;
+                    noInlineResults = BuildNoInlineModel(r, x, b);
+                    if (noInlineResults == null)
+                    {
+                        Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                        continue;
+                    }
+                    benchmarkResults.Add(noInlineResults);
                 }
-                benchmarkResults.Add(noInlineResults);
 
                 if (UseLegacyModel)
                 {
@@ -2320,25 +2336,6 @@ namespace PerformanceExplorer
                         continue;
                     }
                     benchmarkResults.Add(legacyResults);
-
-                    // See impact of LegacyPolicy inlines
-
-                    int legacyCount = legacyResults.Performance.ExecutionTime.Count;
-                    int noInlineCount = noInlineResults.Performance.ExecutionTime.Count;
-
-                    if (legacyCount != noInlineCount)
-                    {
-                        Console.WriteLine("Odd, noinline had {0} parts, legacy has {1} parts. " +
-                            "Skipping remainder of work for this benchmark",
-                            noInlineCount, legacyCount);
-                        continue;
-                    }
-
-                    if (legacyCount == 0)
-                    {
-                        Console.WriteLine("Odd, benchmark has no perf data. Skipping");
-                        continue;
-                    }
                 }
 
                 if (UseEnhancedLegacyModel)
