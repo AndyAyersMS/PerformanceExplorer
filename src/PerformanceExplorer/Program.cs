@@ -13,15 +13,13 @@ namespace PerformanceExplorer
     // used to perform a particular run.
     public class Configuration
     {
-        public static bool DisableZap = false;
-
         public Configuration(string name)
         {
             Name = name;
             Environment = new Dictionary<string, string>();
             ResultsDirectory = Program.RESULTS_DIR;
 
-            if (DisableZap)
+            if (Program.DisableZap)
             {
                 Environment["COMPlus_ZapDisable"] = "1";
             }
@@ -550,7 +548,7 @@ namespace PerformanceExplorer
             return endResults.Methods.Count() - other.endResults.Methods.Count();
         }
 
-        public void Explore(StreamWriter combinedDataFile, ref bool combinedHasHeader)
+        public void Explore(StreamWriter combinedDataFile, ref bool combinedHasHeader, Dictionary<MethodId, ulong> blacklist)
         {
             Console.WriteLine("$$$ Exploring significant perf diff in {0} between {1} and {2}",
                 benchmark.ShortName, baseResults.Name, endResults.Name);
@@ -604,6 +602,7 @@ namespace PerformanceExplorer
                     continue;
                 }
 
+                // Optionally just explore some paritcular root
                 if ((Program.RootToken != null) && rootMethod.Token != Program.RootTokenValue)
                 {
                     Console.WriteLine("$$$ Skipping -- does not match specified root token {0}", Program.RootToken);
@@ -618,16 +617,23 @@ namespace PerformanceExplorer
                     continue;
                 }
 
-                //if (!rootMethod.Name.Contains("b__1"))
-                //{
-                //    // Console.WriteLine("$$$ Skipping, not special method of interest");
-                //    continue;
-                //}
-
                 // Only expore methods that were called in the noinline run
                 if (rootMethod.CallCount == 0)
                 {
-                    //Console.WriteLine("$$$ Skipping -- not called");
+                    Console.WriteLine("$$$ Skipping -- not called");
+                    continue;
+                }
+
+                // Don't re-explore a method on the blacklist, unless we see significantly more calls to it than
+                // we have ever seen before. This short-circuts exploration for common startup code and the like, 
+                // if we disable zap.
+                if (blacklist != null && blacklist.ContainsKey(rootMethod.getId()))
+                {
+                    ulong oldCallCount = blacklist[rootMethod.getId()];
+
+                    if (rootMethod.CallCount <= 2 * oldCallCount)
+
+                    Console.Write("$$$ Skipping -- already explored this method");
                     continue;
                 }
 
@@ -653,6 +659,12 @@ namespace PerformanceExplorer
                     Console.WriteLine("$$$ Might hit limit of {0} inlines explored, trimming end count from {1} to {2}", 
                         perBenchmarkExplorationLimit, endCount, newEndCount);
                     endCount = newEndCount;
+                }
+
+                // Add method to the blacklist, if we're keeping one.
+                if (blacklist != null)
+                {
+                    blacklist[rootMethod.getId()] = rootMethod.CallCount;
                 }
 
                 // Noinline perf is already "known" from the baseline, so exclude that here.
@@ -1018,6 +1030,10 @@ namespace PerformanceExplorer
             }
 
             // Run and capture method call counts
+            //
+            // Note if we've really done a pure isolation experiment than there should be at most
+            // one method whose call count changes. Might be interesting to try and verify this!
+            // (would require zap disable or similar so we get call counts for all methods)
             if (Program.CaptureCallCounts && callCounts != null)
             {
                 string callCountName = String.Format("{0}-{1}-{2:X8}-{3}-cc", benchmark.ShortName, endResults.Name, rootMethod.Token, k);
@@ -1081,14 +1097,23 @@ namespace PerformanceExplorer
 
                 if (!foundcc)
                 {
-                    // Note if the method is never called we may not have an entry!
-                    // Will just assume after result is zero.
-                    Console.WriteLine("No call count entry for {0:X8}-{1:X8}. Assuming zero.",
-                        currentId.Token, currentId.Hash);
+                    // The method was evidently not called in the latest run.
                     if (callCounts.ContainsKey(currentId))
                     {
+                        // It was called in earlier runs, so assume we've inlined the last call.
                         ccDelta = callCounts[currentId];
+                        Console.WriteLine("### No (after) call count entry for {0:X8}-{1:X8}. Assuming all calls inlined. ccdelta = {2}.",
+                            currentId.Token, currentId.Hash, ccDelta);
                     }
+                    else
+                    {
+                        // It was not called in earlier runs, assume it was never called.
+                        ccDelta = 0;
+                        Console.WriteLine("### No (before) call count entry for {0:X8}-{1:X8}. Assuming method never called. ccdelta = 0.",
+                            currentId.Token, currentId.Hash);
+                    }
+
+                    // Going forward, we don't expect to see this method be called
                     callCounts[currentId] = 0;
                 }
             }
@@ -1248,8 +1273,6 @@ namespace PerformanceExplorer
         {
             cmdExe = Program.SHELL;
             runnerExe = Program.CORERUN;
-            verbose = true;
-            veryVerbose = true;
         }
 
         public override Results RunBenchmark(Benchmark b, Configuration c)
@@ -1275,7 +1298,7 @@ namespace PerformanceExplorer
             runnerProcess.StartInfo.WorkingDirectory = System.IO.Path.GetDirectoryName(b.FullPath);
             runnerProcess.StartInfo.UseShellExecute = false;
 
-            if (veryVerbose)
+            if (Program.VeryVerbose)
             {
                 Console.WriteLine("CoreCLR: launching " + runnerProcess.StartInfo.Arguments);
             }
@@ -1283,7 +1306,7 @@ namespace PerformanceExplorer
             runnerProcess.Start();
             runnerProcess.WaitForExit();
 
-            if (verbose)
+            if (Program.Verbose)
             {
                 Console.WriteLine("CoreCLR: Finished running {0} -- configuration: {1}, exit code: {2} (expected {3})",
                     b.ShortName, c.Name, runnerProcess.ExitCode, b.ExitCode);
@@ -1304,17 +1327,12 @@ namespace PerformanceExplorer
 
         private string runnerExe;
         private string cmdExe;
-        bool verbose;
-        bool veryVerbose;
     }
 
     public class XunitPerfRunner : Runner
     {
         public XunitPerfRunner()
         {
-            verbose = true;
-            veryVerbose = false;
-
             SetupSandbox();
         }
 
@@ -1328,14 +1346,14 @@ namespace PerformanceExplorer
 
             if (Directory.Exists(sandboxDir))
             {
-                if (verbose)
+                if (Program.Verbose)
                 {
                     Console.WriteLine("...Cleaning old xunit-perf sandbox '{0}'", sandboxDir);
                 }
                 Directory.Delete(sandboxDir, true);
             }
 
-            if (verbose)
+            if (Program.Verbose)
             {
                 Console.WriteLine("...Creating new xunit-perf sandbox '{0}'", sandboxDir);
             }
@@ -1403,7 +1421,7 @@ namespace PerformanceExplorer
             runnerProcess.StartInfo.WorkingDirectory = sandboxDir;
             runnerProcess.StartInfo.UseShellExecute = false;
 
-            if (veryVerbose)
+            if (Program.VeryVerbose)
             {
                 Console.WriteLine("xUnitPerf: launching " + runnerProcess.StartInfo.Arguments);
             }
@@ -1411,7 +1429,7 @@ namespace PerformanceExplorer
             runnerProcess.Start();
             runnerProcess.WaitForExit();
 
-            if (verbose)
+            if (Program.VeryVerbose)
             {   
                 // Xunit doesn't run Main so no 100 exit here.
                 Console.WriteLine("xUnitPerf: Finished running {0} -- configuration: {1}, exit code: {2}",
@@ -1445,7 +1463,7 @@ namespace PerformanceExplorer
                 perfData.InstructionCount[subName] = new List<double>(iInstructionsRetired);
             }
 
-            if (verbose)
+            if (Program.Verbose)
             {
                 perfData.Print(c.Name);
             }
@@ -1462,8 +1480,6 @@ namespace PerformanceExplorer
         static string coreclrRoot = Program.CORECLR_ROOT;
         static string testOverlayRoot = Path.Combine(coreclrRoot, @"bin\tests\Windows_NT.x64.Release\tests\Core_Root");
         static bool sandboxIsSetup;
-        bool verbose;
-        bool veryVerbose;
     }
 
     public class Program
@@ -1983,8 +1999,26 @@ namespace PerformanceExplorer
 
         }
 
+        static void SetupResults()
+        {
+            if (Directory.Exists(Program.RESULTS_DIR))
+            {
+                if (Program.Verbose)
+                {
+                    Console.WriteLine("...Cleaning old results dir '{0}'", Program.RESULTS_DIR);
+                }
+                Directory.Delete(Program.RESULTS_DIR, true);
+            }
+
+            if (Program.Verbose)
+            {
+                Console.WriteLine("...Creating new results '{0}'", Program.RESULTS_DIR);
+            }
+            Directory.CreateDirectory(Program.RESULTS_DIR);
+            DirectoryInfo sandboxDirectoryInfo = new DirectoryInfo(Program.RESULTS_DIR);
+        }
+
         // Paths to repos and binaries. 
-        // Todo: Make this configurable.
         public static string REPO_ROOT = @"c:\repos";
         public static string CORECLR_ROOT = REPO_ROOT + @"\coreclr";
         public static string CORECLR_BENCHMARK_ROOT = CORECLR_ROOT + @"\bin\tests\Windows_NT.x64.Release\JIT\performance\codequality";
@@ -1994,7 +2028,7 @@ namespace PerformanceExplorer
         public static string SANDBOX_DIR = REPO_ROOT + @"\PerformanceExplorer\sandbox";
 
         // Various aspects of the exploration that can be enabled/disabled.
-        // Todo: Make this configurable.
+        public static bool DisableZap = false;
         public static bool UseLegacyModel = true;
         public static bool UseEnhancedLegacyModel = false;
         public static bool UseFullModel = false;
@@ -2010,6 +2044,8 @@ namespace PerformanceExplorer
         public static string MethodFilter = null;
         public static string RootToken = null;
         public static uint RootTokenValue = 0;
+        public static bool Verbose = true;
+        public static bool VeryVerbose = false;
 
         public static List<string> ParseArgs(string[] args)
         {
@@ -2025,6 +2061,10 @@ namespace PerformanceExplorer
                     {
                         ExploreInlines = false;
                         CaptureCallCounts = false;
+                    }
+                    if (arg == "-disableZap")
+                    {
+                        DisableZap = true;
                     }
                     else if (arg == "-allTests")
                     {
@@ -2138,6 +2178,9 @@ namespace PerformanceExplorer
             RESULTS_DIR = Path.Combine(REPO_ROOT, "PerformanceExplorer", "results");
             SANDBOX_DIR = Path.Combine(REPO_ROOT, "PerformanceExplorer", "sandbox");
 
+            // Setup results dir
+            SetupResults();
+
             return true;
         }
 
@@ -2234,9 +2277,22 @@ namespace PerformanceExplorer
                         Console.WriteLine(".... bytemark disabled (noisy), sorry");
                         continue;
                     }
+
                     if (s.IndexOf("raytracer", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         Console.WriteLine(".... raytracer disabled (nondeterministic), sorry");
+                        continue;
+                    }
+
+                    if (s.IndexOf("constantarg", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        Console.WriteLine(".... constantarg disabled (too much detail), sorry");
+                        continue;
+                    }
+
+                    if (s.IndexOf("functions", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        Console.WriteLine(".... functions disabled (too much detail), sorry");
                         continue;
                     }
                 }
@@ -2350,10 +2406,18 @@ namespace PerformanceExplorer
                 if (ExploreInlines)
                 {
                     var thingsToExplore = ExaminePerf(b, benchmarkResults);
+                    Dictionary<MethodId, ulong> blacklist = null;
+                    
+                    // Use blacklist if we disable zap so we won't repeatedly
+                    // explore the same startup paths in the core library
+                    if (DisableZap)
+                    {
+                        blacklist = new Dictionary<MethodId, ulong>();
+                    }
 
                     foreach (Exploration e in thingsToExplore)
                     {
-                        e.Explore(dataModelFile, ref hasHeader);
+                        e.Explore(dataModelFile, ref hasHeader, blacklist);
                     }
 
                     dataModelFile.Flush();
