@@ -2014,6 +2014,7 @@ namespace PerformanceExplorer
             {
                 Console.WriteLine("...Creating new results '{0}'", Program.RESULTS_DIR);
             }
+
             Directory.CreateDirectory(Program.RESULTS_DIR);
             DirectoryInfo sandboxDirectoryInfo = new DirectoryInfo(Program.RESULTS_DIR);
         }
@@ -2148,21 +2149,21 @@ namespace PerformanceExplorer
                 // Exploration should at least run a noinline model
                 if (!UseNoInlineModel)
                 {
-                    Console.Write("... exploration: forcibly enabling NoInlineModel");
+                    Console.WriteLine("...Exploration: forcibly enabling NoInlineModel");
                     UseNoInlineModel = true;
                 }
 
                 // If no alternate models are selected, forcibly enable the full model.
                 if (!hasInlineModel)
                 {
-                    Console.Write("... exploration: forcibly enabling FullModel");
+                    Console.WriteLine("...Exploration: forcibly enabling FullModel");
                     UseFullModel = true;
                 }
             }
             else if (!(hasInlineModel || UseNoInlineModel))
             {
                 // perf should run at least one model. Choose current default.
-                Console.Write("... perf: forcibly enabling EnhancedLegacyModel");
+                Console.WriteLine("...Performance: forcibly enabling EnhancedLegacyModel");
                 UseEnhancedLegacyModel = true;
             }
 
@@ -2214,9 +2215,6 @@ namespace PerformanceExplorer
             RESULTS_DIR = Path.Combine(REPO_ROOT, "PerformanceExplorer", "results");
             SANDBOX_DIR = Path.Combine(REPO_ROOT, "PerformanceExplorer", "sandbox");
 
-            // Setup results dir
-            SetupResults();
-
             return true;
         }
 
@@ -2230,6 +2228,7 @@ namespace PerformanceExplorer
                 return -1;
             }
 
+            SetupResults();
             Program p = new Program();
 
             // Enumerate benchmarks that can be run
