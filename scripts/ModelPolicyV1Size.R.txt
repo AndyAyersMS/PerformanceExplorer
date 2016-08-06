@@ -1,0 +1,61 @@
+## Read in raw data set
+      
+InlineData.raw <- read.csv("c:\\repos\\inlinedata\\mscorlib.data.model-rel.log.parsed", header=TRUE, comment.char="")
+
+## Identify factors and logicals
+
+#InlineData.raw$Arg0Type <- as.factor(InlineData.raw$Arg0Type)
+#InlineData.raw$Arg1Type <- as.factor(InlineData.raw$Arg1Type)
+#InlineData.raw$Arg2Type <- as.factor(InlineData.raw$Arg2Type)
+#InlineData.raw$Arg3Type <- as.factor(InlineData.raw$Arg3Type)
+#InlineData.raw$Arg4Type <- as.factor(InlineData.raw$Arg4Type)
+#InlineData.raw$Arg5Type <- as.factor(InlineData.raw$Arg5Type)
+#InlineData.raw$ReturnType <- as.factor(InlineData.raw$ReturnType)
+#InlineData.raw$CallsiteFrequency <- as.factor(InlineData.raw$CallsiteFrequency)
+InlineData.raw$IsForceInline <- as.logical(InlineData.raw$IsForceInline)
+InlineData.raw$IsInstanceCtor <- as.logical(InlineData.raw$IsInstanceCtor)
+InlineData.raw$IsFromPromotableValueClass <- as.logical(InlineData.raw$IsFromPromotableValueClass)
+InlineData.raw$HasSimd <- as.logical(InlineData.raw$HasSimd)
+InlineData.raw$LooksLikeWrapperMethod <- as.logical(InlineData.raw$LooksLikeWrapperMethod)
+InlineData.raw$ArgFeedsConstantTest <- as.logical(InlineData.raw$ArgFeedsConstantTest)
+InlineData.raw$IsMostlyLoadStore <- as.logical(InlineData.raw$IsMostlyLoadStore)
+InlineData.raw$ArgFeedsRangeCheck <- as.logical(InlineData.raw$ArgFeedsRangeCheck)
+InlineData.raw$ConstantFeedsConstantTest <- as.logical(InlineData.raw$ConstantFeedsConstantTest)
+
+## Remove Version0 (roots) and strip non-predictive columns
+
+Col.N      <- c("Method", "Version", "JitTime", "HotSize", "ColdSize")
+InlineData <- InlineData.raw[InlineData.raw$Version > 0, setdiff(names(InlineData.raw), Col.N)]
+InlineDataV0r <- InlineData.raw[InlineData.raw$Version == 0, ]
+
+## Produce frame with just predictive columns and the result we want to estimate
+
+Col.Z      <- c("JitTimeDelta", "ColdSizeDelta", "HotSizeDelta", "ModelCodeSizeEstimate")
+Col.XY     <- setdiff(names(InlineData), Col.Z)
+Col.Y      <- c("TotalSizeDelta")
+Col.X      <- setdiff(Col.XY, Col.Y)
+
+## Examine existing models
+
+Model.P   <- InlineData$ModelCodeSizeEstimate/10
+Actual    <- InlineData$TotalSizeDelta
+
+## Build new models
+## using glmnet for modelling
+
+## install.packages("glmnet")
+library(glmnet)
+InlineData.XY <- InlineData[, Col.XY]
+set.seed(1001)
+
+FullModel.M <- model.matrix(TotalSizeDelta ~ ., InlineData.XY)
+FullModel <- cv.glmnet(FullModel.M, Actual)
+FullModel.P <- predict(FullModel, FullModel.M, s="lambda.1se")
+FullModel.C <- coef(FullModel, s="lambda.1se")
+
+Full.S        <- sum(InlineData$TotalSizeDelta^ 2)
+FullModel.SE  <- sum((FullModel.P - Actual)^2)
+FullModel.MSE <- FullModel.SE / nrow(InlineData)
+FullModel.AE  <- sum(abs(FullModel.P - Actual))
+FullModel.MAE <- FullModel.AE / nrow(InlineData)
+FullModel.R   <- 1 - FullModel.SE / Full.S

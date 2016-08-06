@@ -1,0 +1,84 @@
+## Used for initial ModelPolicy performance model
+
+D <- read.csv("c:\\repos\\performanceexplorer\\data\\all-benchmark-v3-a13.csv")
+
+## Identify factors and logicals
+
+D$Arg0Type <- as.factor(D$Arg0Type)
+D$Arg1Type <- as.factor(D$Arg1Type)
+D$Arg2Type <- as.factor(D$Arg2Type)
+D$Arg3Type <- as.factor(D$Arg3Type)
+D$Arg4Type <- as.factor(D$Arg4Type)
+D$Arg5Type <- as.factor(D$Arg5Type)
+D$ReturnType <- as.factor(D$ReturnType)
+D$CallsiteFrequency <- as.factor(D$CallsiteFrequency)
+D$IsForceInline <- as.logical(D$IsForceInline)
+D$IsInstanceCtor <- as.logical(D$IsInstanceCtor)
+D$IsFromPromotableValueClass <- as.logical(D$IsFromPromotableValueClass)
+D$HasSimd <- as.logical(D$HasSimd)
+D$LooksLikeWrapperMethod <- as.logical(D$LooksLikeWrapperMethod)
+D$ArgFeedsConstantTest <- as.logical(D$ArgFeedsConstantTest)
+D$IsMostlyLoadStore <- as.logical(D$IsMostlyLoadStore)
+D$ArgFeedsRangeCheck <- as.logical(D$ArgFeedsRangeCheck)
+D$ConstantFeedsConstantTest <- as.logical(D$ConstantFeedsConstantTest)
+
+## Filter to observations with at least 0.8 confidence
+## Filter to observations where the call happened at least 1000x
+## Filter to cases where per call impact is within -100, 100
+
+Dcq <- D[(D$Confidence > 0.8) & (D$CallDelta > 1000) & (abs(D$InstRetiredPerCallDelta) < 100), ]
+
+## (have 210 entries for V3 data set)
+
+## Identify non-predictive columns so we can strip them
+
+Col.NP  <- c("Benchmark", "SubBenchmark", "Method", "Version", "JitTime", "HotSize", "ColdSize", "Depth")
+Study   <- Dcq[Dcq$Version > 0, setdiff(names(Dcq), Col.NP)]
+
+## Produce frame with just predictive columns and the result we want to estimate
+
+Col.YY     <- c("HotSizeDelta","ColdSizeDelta","JitTimeDelta","InstRetiredDelta",
+                "InstRetiredPct","CallDelta","InstRetiredPerCallDelta","Confidence")
+Col.Y      <- c("InstRetiredPerCallDelta")
+Col.Yx     <- setdiff(Col.YY, Col.Y)
+
+Col.XY     <- setdiff(names(Study), Col.Yx)
+Col.X      <- setdiff(Col.XY, Col.Y)
+
+Study.XY <- Study[, Col.XY]
+Study.X  <- Study[, Col.X]
+Actual   <- Study[, Col.Y]
+
+## install.packages("glmnet")
+
+library(glmnet)
+
+## Model dependent var vs observations
+
+set.seed(1001)
+F <- paste(Col.Y[1], " ~ .")
+FullModel.M <- model.matrix(as.formula(F), Study.XY)
+FullModel <- cv.glmnet(FullModel.M, Actual)
+
+# run new predictions
+
+FullModel.P <- predict(FullModel, FullModel.M, s="lambda.min")
+FullModel.C <- predict(FullModel, FullModel.M, s="lambda.min", type="coefficients")
+
+P <- data.frame(Actual, FullModel.P, FullModel.P - Actual)
+names(P) <- c("Actual", "FullModel", "FullModel.res")
+
+## Scoring
+
+Full.S        <- sum(Actual^ 2)
+FullModel.SE  <- sum((FullModel.P - Actual)^2)
+FullModel.MSE <- FullModel.SE / nrow(Study)
+FullModel.AE  <- sum(abs(FullModel.P - Actual))
+FullModel.MAE <- FullModel.AE / nrow(Study)
+FullModel.R   <- 1 - FullModel.SE / Full.S
+
+## Plotting
+
+library(ggplot2)
+
+Plot.F <- ggplot(P, aes(x=FullModel.P, y=Actual)) + geom_boxplot(aes(group=cut_width(FullModel, 1)), outlier.color="red") + coord_cartesian(ylim=c(-40,40), xlim=c(-40,40)) + geom_abline(slope=1, color="blue")
