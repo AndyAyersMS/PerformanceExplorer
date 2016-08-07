@@ -548,7 +548,7 @@ namespace PerformanceExplorer
             return endResults.Methods.Count() - other.endResults.Methods.Count();
         }
 
-        public void Explore(StreamWriter combinedDataFile, ref bool combinedHasHeader, Dictionary<MethodId, ulong> blacklist)
+        public void Explore(StreamWriter combinedDataFile, ref bool combinedHasHeader, Dictionary<uint, ulong> blacklist)
         {
             Console.WriteLine("$$$ Exploring significant perf diff in {0} between {1} and {2}",
                 benchmark.ShortName, baseResults.Name, endResults.Name);
@@ -576,6 +576,10 @@ namespace PerformanceExplorer
             }
 
             Console.WriteLine("$$$ Examining {0} methods, {1} inline combinations", candidateCount, exploreCount);
+            if (blacklist != null)
+            {
+                Console.WriteLine("$$$ Blacklist in use: {0} entries", blacklist.Count);
+            }
 
             // Todo: order methods by call count. Find top N% of these. Determine callers (and up the tree)
             // Explore from there.
@@ -627,14 +631,30 @@ namespace PerformanceExplorer
                 // Don't re-explore a method on the blacklist, unless we see significantly more calls to it than
                 // we have ever seen before. This short-circuts exploration for common startup code and the like, 
                 // if we disable zap.
-                if (blacklist != null && blacklist.ContainsKey(rootMethod.getId()))
+                if (blacklist != null)
                 {
-                    ulong oldCallCount = blacklist[rootMethod.getId()];
+                    if (blacklist.ContainsKey(rootMethod.Hash))
+                    {
+                        Console.WriteLine("$$$ root method is on the blacklist");
 
-                    if (rootMethod.CallCount <= 2 * oldCallCount)
+                        ulong oldCallCount = blacklist[rootMethod.Hash];
 
-                    Console.Write("$$$ Skipping -- already explored this method");
-                    continue;
+                        if (rootMethod.CallCount <= 2 * oldCallCount)
+                        {
+                            Console.WriteLine("$$$ Skipping -- already explored this root with {0} calls, now seeing it with {1}",
+                                oldCallCount, rootMethod.CallCount);
+                            continue;
+                        }
+                        else
+                        {
+                            Console.WriteLine("$$$ will re-explore this method, previous had {0} calls, now seeing it with {1}",
+                                oldCallCount, rootMethod.CallCount);
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("$$$ root method not on blacklist");
+                    }
                 }
 
                 // Limit volume of exploration
@@ -664,7 +684,8 @@ namespace PerformanceExplorer
                 // Add method to the blacklist, if we're keeping one.
                 if (blacklist != null)
                 {
-                    blacklist[rootMethod.getId()] = rootMethod.CallCount;
+                    Console.WriteLine("$$$ adding {0} to blacklist with {1} calls", rootMethod.Name, rootMethod.CallCount);
+                    blacklist[rootMethod.Hash] = rootMethod.CallCount;
                 }
 
                 // Noinline perf is already "known" from the baseline, so exclude that here.
@@ -2427,13 +2448,13 @@ namespace PerformanceExplorer
                 if (ExploreInlines)
                 {
                     var thingsToExplore = ExaminePerf(b, benchmarkResults);
-                    Dictionary<MethodId, ulong> blacklist = null;
+                    Dictionary<uint, ulong> blacklist = null;
                     
                     // Use blacklist if we disable zap so we won't repeatedly
                     // explore the same startup paths in the core library
                     if (DisableZap)
                     {
-                        blacklist = new Dictionary<MethodId, ulong>();
+                        blacklist = new Dictionary<uint, ulong>();
                     }
 
                     foreach (Exploration e in thingsToExplore)
