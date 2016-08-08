@@ -578,7 +578,7 @@ namespace PerformanceExplorer
             Console.WriteLine("$$$ Examining {0} methods, {1} inline combinations", candidateCount, exploreCount);
             if (blacklist != null)
             {
-                Console.WriteLine("$$$ Blacklist in use: {0} entries", blacklist.Count);
+                Console.WriteLine("$$$ blacklist in use: {0} entries", blacklist.Count);
             }
 
             // Todo: order methods by call count. Find top N% of these. Determine callers (and up the tree)
@@ -635,13 +635,12 @@ namespace PerformanceExplorer
                 {
                     if (blacklist.ContainsKey(rootMethod.Hash))
                     {
-                        Console.WriteLine("$$$ root method is on the blacklist");
-
+                        Console.WriteLine("$$$ method is on the blacklist");
                         ulong oldCallCount = blacklist[rootMethod.Hash];
 
                         if (rootMethod.CallCount <= 2 * oldCallCount)
                         {
-                            Console.WriteLine("$$$ Skipping -- already explored this root with {0} calls, now seeing it with {1}",
+                            Console.WriteLine("$$$ Skipping -- already explored this method with {0} calls, now seeing it with {1}",
                                 oldCallCount, rootMethod.CallCount);
                             continue;
                         }
@@ -653,7 +652,7 @@ namespace PerformanceExplorer
                     }
                     else
                     {
-                        Console.WriteLine("$$$ root method not on blacklist");
+                        Console.WriteLine("$$$ method not on blacklist");
                     }
                 }
 
@@ -2314,9 +2313,17 @@ namespace PerformanceExplorer
             string dataModelFileName = Path.Combine(Program.RESULTS_DIR, dataModelName);
             bool hasHeader = false;
             StreamWriter dataModelFile = null;
+            Dictionary<uint, ulong> blacklist = null;
             if (ExploreInlines)
             {
                 dataModelFile = File.CreateText(dataModelFileName);
+
+                if (DisableZap)
+                {
+                    // Use blacklist if we disable zap so we won't repeatedly
+                    // explore the same startup paths in the core library across benchmarks
+                    blacklist = new Dictionary<uint, ulong>();
+                }
             }
 
             // Collect up result sets
@@ -2448,14 +2455,6 @@ namespace PerformanceExplorer
                 if (ExploreInlines)
                 {
                     var thingsToExplore = ExaminePerf(b, benchmarkResults);
-                    Dictionary<uint, ulong> blacklist = null;
-                    
-                    // Use blacklist if we disable zap so we won't repeatedly
-                    // explore the same startup paths in the core library
-                    if (DisableZap)
-                    {
-                        blacklist = new Dictionary<uint, ulong>();
-                    }
 
                     foreach (Exploration e in thingsToExplore)
                     {
