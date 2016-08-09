@@ -309,19 +309,20 @@ generic methods. Postprocessing would thus ignore any data from a
 method where the key was not unique (eg multiple version 0 rows with
 the same token and hash).
 
-The [data set used](https://...) to develop the current model is taken
-from a crossgen of the CoreCLR core library. It has 29854 rows. Given
-the special role played by this library it is quite possible this is
-not a good representative set of methods. Considerably more and more
-diverse data was gathered (upwards of 1M rows using the desktop "SPMI"
-method) but this data proved unwieldy. The data gathered is also
-specific to x64 and windows and the behavior of the jit at that time.
+The [data set used](../data/mscorlib.data.model-rel-log.parsed) to
+develop the current model is taken from a crossgen of the CoreCLR core
+library. It has 29854 rows. Given the special role played by this
+library it is quite possible this is not a good representative set of
+methods. Considerably more and more diverse data was gathered (upwards
+of 1M rows using the desktop "SPMI" method) but this data proved
+unwieldy. The data gathered is also specific to x64 and windows and
+the behavior of the jit at that time.
 
 Subsequent work on performance measurement has created new data sets
 that could be used for size modelling, since a similar sort of
 K-limiting approach was used for performance, and the factor
 observations for size and speed are common. The most recent such data
-set is the [v12 data](https://...).
+set is the [v12 data](../data/all-benchmark-v12-a15.csv).
 
 ### Size Modelling
 
@@ -333,10 +334,11 @@ should work well.
 The model needs to be relatively simple to implement and quick to
 evaluate, and it is highly desirable that it be interpretable. Based
 on this the model developed is a penalized linear model using R's
-'glmnet'. [This script](http://...) was used to derive the model.  It
-is implemented by `DiscretionaryPolicy::EstimateCodeSize` in the code
-base. This model explains about 55% of the variance in the mscorlib
-size data, and 65% of the variance gained in the v12 data.
+'glmnet'. [This script](../scripts/ModelPolicyV1Size.R.txt) was used
+to derive the model.  It is implemented by
+`DiscretionaryPolicy::EstimateCodeSize` in the code base. This model
+explains about 55% of the variance in the mscorlib size data, and 65%
+of the variance gained in the v12 data.
 
 Naive use of more sophisticated models (eg random forests, gradient
 boosting, mars) to see how much the linear model might be leaving
@@ -459,7 +461,7 @@ of possible inline trees and hence inline forests.
 ### How to Measure an Inline
 
 The measurement process described below is orchestrated by the
-[PerformanceEXplorer](http://...).
+[PerformanceExplorer](https://github.com/AndyAyersMS/PerformanceExplorer).
 
 Benchmarks are set up to run under xunit-performance. Per-benchmark
 times are rougly normalized to 1 second to try and keep the variance
@@ -687,9 +689,11 @@ Very few models can explain more than a few percent of the variation.
 ### Speed Model -- Implemented Model
 
 The model currently implemented in the `ModelPolicy` came from an
-early (V3) data set, and relies on just 210 observations. It predicts
-`InstRetiredPerCallDelta`. It is a penalized linear model that can
-explain only about 24% of the variation.
+early V3 [data set](../data/all-benchmark-v3-a13.csv), and relies on
+just 210 observations. It predicts `InstRetiredPerCallDelta`. It is a
+penalized linear model that can explain only about 24% of the
+variation. [This is the script](../scripts/ModelPolicyV1Perf.R.txt)
+used to derive the model
 
 For use in the heuristic, the speed estimate from the model is
 multiplied by a local estimate of `CallDelta` to give an estimate of
