@@ -111,7 +111,7 @@ more, many remaining about the same, an a few slowing down.
 CQ generally increases steadily in aggregate with more inlining. For
 reasonable amounts of inlining, the cases where inlining hurts
 performance are fairly rare. At high enough levels of inlining there
-may be adverse interations as optimizer thresholds are tripped, and
+may be adverse interactions as optimizer thresholds are tripped, and
 eventually the impact of the larger code is felt as contention for the
 limited physical memory resources of the host machine.
 
@@ -153,10 +153,11 @@ briefly below and in more detail in subsequent sections.
 
 Refactoring was done to enable the jit to have mulitple inlining
 policies that could exist side by side. For compatibility reasons it
-was desirable to presenve the exsting (legacy) behavior, and allowing
+was desirable to preserve the existing (legacy) behavior, and allowing
 other policies side by side facilitates experimentation. The legacy
 inliner's decision making was intertwined with the observation
-process, so it was necessary to separate these out.
+process, so it was necessary to separate these out to decouple policy
+from observation.
 
 Size impact of inlining was measured using the "crossgen" feature of
 the CLR. Here the jit is asked to generate code for most of the
@@ -179,8 +180,8 @@ performance monitoring counters to capture the number of instructions
 retired as the jitted code ran. Inlines were measured in isolation,
 one by one, and the difference in instructions retired was attributed
 to the inline. This data along with observations formed the data set
-that feed the speed model. Unfortunately, this data has proven to be
-difficult to model accurately.
+that feed the speed model. Unfortunately, this performance data has
+proven to be difficult to model accurately.
 
 ## Constraints and Assumptions
 
@@ -338,16 +339,15 @@ on this the model developed is a penalized linear model using R's
 to derive the model.  It is implemented by
 `DiscretionaryPolicy::EstimateCodeSize` in the code base. This model
 explains about 55% of the variance in the mscorlib size data, and 65%
-of the variance gained in the v12 data.
+of the variance seen in the v12 data.
 
 Naive use of more sophisticated models (eg random forests, gradient
 boosting, mars) to see how much the linear model might be leaving
 behind didn't yield much improvement.
 
-So the belief is (given the noise-free measurements that can be made
-for code size) that the remaining unexplained variance comes from
-missing observations. An exploration of poorly fitting examples would
-likely prove fruitful. There is likely some nontrivial amount of
+So the belief is that some the remaining unexplained variance comes
+from missing observations. An exploration of poorly fitting examples
+would likely prove fruitful. There is likely some nontrivial amount of
 variation that will never be easily explained -- the jit's code
 generation can be quite sensitive to the exact details of both root
 method and callee.
@@ -410,7 +410,7 @@ host machine, time-based measurements also can fall prey to
 microarchitectural implementation issues, in particular things like
 loop alignments, global branch prediction, various security-inspired
 randomization techniques, power management, and so on. Thus even
-run-to-run repeatabilty on an otherwise quite machine will be
+run-to-run repeatabilty on an otherwise quiet machine will be
 impacted. The inliner also operates early enough in the compilation
 pipleline that machine microarchitecture is of a secondary concern.
 
