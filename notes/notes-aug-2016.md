@@ -13,7 +13,7 @@ based on machine learning -- the ModelPolicy. This policy can be
 enabled by setting COMPlus_JitInlinePolicyModel=1 in environments
 where the jit generates code. Measurements on various internal
 benchmarks have shown this new policy gives roughly 2% geomean CQ
-improvement, 2% geomean CS reduction, and 1% througput reduction.
+improvement, 2% geomean CS reduction, and 1% throughput reduction.
 Measurements on "realistic" applications has just begun and the
 initial results are not as encouraging, but we are still optimistic
 that with some more work, the ModelPolicy or something quite similar
@@ -36,7 +36,7 @@ inlining heuristics was based on both past experience and some
 promising results from the literature.
 
 Past experience in manual development of inlining heuristics has shown
-that it is a complex and challenging endeavor. Typically the heuristic
+that it is a complex and challenging endeavor. Typically, the heuristic
 developer must carefully study some number of examples to try and
 discern what factors lead to "good" inlines. These factors are then
 coded as heuristics, and combined via some ad-hoc method (say, via
@@ -48,7 +48,7 @@ Failure of the heuristic to perform on certain benchmarks can and
 perhaps should lead to refining existing heuristics or the development
 of new heuristics, or to the improvement of downstream optimization
 abilities in the compiler, but often instead is handled by adjusting
-the the various weights to try and obtain the desired outcome. There
+the various weights to try and obtain the desired outcome. There
 is inevitable bias in the developer's choice of factors and the expert
 analysis required to gain insight only scales to relatively small
 numbers of examples. Rigorous analysis to cross-check the importance
@@ -57,7 +57,7 @@ is typically not measured. This can lead to misleading confidence in
 the heuristics, since benchmark program never change, while real
 applications evolve over time, sometimes quite rapidly.
 
-The recent literature has describes some successes in using machine
+The recent literature describes some successes in using machine
 learning to create good inlining heuristics. One example is [Automatic
 Construction of Inlining Heuristics using Machine
 Learning](http://dl.acm.org/citation.cfm?id=2495914) by Kulkarni,
@@ -109,13 +109,13 @@ distribution is broad, with some programs speeding up by substantially
 more, many remaining about the same, an a few slowing down.
 
 CQ generally increases steadily in aggregate with more inlining. For
-reasonable amounts of inlining, the cases where inlining hurts
-performance are fairly rare. At high enough levels of inlining there
-may be adverse interactions as optimizer thresholds are tripped, and
+reasonable amounts of inlining, cases where inlining hurts performance
+are fairly rare. At high enough levels of inlining there may be
+adverse interactions as optimizer thresholds are tripped, and
 eventually the impact of the larger code is felt as contention for the
 limited physical memory resources of the host machine.
 
-CS (and TP) are often though of as constraint or penalty terms rather
+CS (and TP) are often thought of as constraint or penalty terms rather
 than as optimization objectives. It is clear from experiments that
 inlining of suitably small methods will decrease CS and TP, so
 obtaining the "minimal" value for these metrics requires some amount
@@ -128,7 +128,7 @@ roughly speaking, there is a CS/CQ tradeoff region with a bounding
 curve at the minimum CQ level. The locus and shape of this curve is
 unknown and must be discovered empirically. The curve will also vary
 considerably depending on the benchmarks. Ensemble measures of
-performance are necessary, and (as noted above) when comparing
+performance are needed, and (as noted above) when comparing
 two well-performing heuristics, there will be always be examples
 where one heuristic outperforms the other.
 
@@ -151,7 +151,7 @@ refactoring, size measurements and modelling, time measurements and
 modelling, and speed measurements and modelling. These are described
 briefly below and in more detail in subsequent sections.
 
-Refactoring was done to enable the jit to have mulitple inlining
+Refactoring was done to enable the jit to have multiple inlining
 policies that could exist side by side. For compatibility reasons it
 was desirable to preserve the existing (legacy) behavior, and allowing
 other policies side by side facilitates experimentation. The legacy
@@ -165,17 +165,17 @@ methods in an assembly ahead of time. The size impact of each inline
 was recorded along with the various observational values that were
 available to feed into a heuristic. This data fed into a size model
 that produced a size estimating heuristic. The models developed so
-far seem reasonbly accurate, with an R^2 value of around 0.6.
+far seem reasonably accurate, with an R^2 value of around 0.6.
 
 The time impact of inlining was measured by capturing CPU cycles
-expended in the jit between the time inlining had finished an the time
-the native code was generated (notably, this omits the time spent
-inlining, which is more difficult to meaure). Modelling showed this
+expended in the jit between the time inlining had finished and the
+time the native code was generated (notably, this omits the time spent
+inlining, which is more difficult to measure). Modelling showed this
 time was closely related to the overall emitted size of the method,
 which was shown to be fairly reliably estimated by the sum of an
 initial time estimate plus the size impact of each successive inline.
 
-The performance impact of inlienes was measured by enabling hardware
+The performance impact of inlines was measured by enabling hardware
 performance monitoring counters to capture the number of instructions
 retired as the jitted code ran. Inlines were measured in isolation,
 one by one, and the difference in instructions retired was attributed
@@ -195,7 +195,7 @@ has very limited ability to convey knowledge from one invocation to
 the next, so analysis costs cannot effectively be amortized.
 
 Currently the jit walks it is IR in linear fashion deciding whether to
-inline each time it sees a candidate. If the decision is yes then the
+inline each time it sees a candidate. If the decision is *yes* then the
 inlined code is spliced in place of the call and (because of the order
 of the walk) immediately scanned for inlining candidates. Thus the
 inlining is performed "depth first" and is done without much knowledge
@@ -224,7 +224,7 @@ size/speed tradeoff made per inline. The idealized heuristic is:
 where here SizeDelta represents the increase in code size caused by
 the inline, SpeedDelta is the decrease in instructions executed, and
 alpha is a tradeoff factor. So good inlines either decrease size, or
-justify their size increase with a speed decreasse, and alpha
+justify their size increase with a speed decrease, and alpha
 describes how willing we are to trade speed for size.
 
 This is roughly the heuristic implemented by the ModelPolicy.
@@ -232,7 +232,7 @@ SizeDelta and SpeedDelta are computed by models derived from machine
 learning, alpha is manually chosen by "tuning" to give the desired
 tradeoff.
 
-However the implemented model has an additional parameter, one whose
+However, the implemented model has an additional parameter, one whose
 presence reflects one of the key challenges present in this work. The
 size model has natural units of bytes of code (or instructions, if
 they're fixed size). Size impacts from inlining are typically small,
@@ -247,7 +247,7 @@ modelling, the value provided by the model is instructions retired per
 call to the callee. This needs to be multiplied by a "call site
 weight" beta to reflect the importance of the call site to the caller,
 and further by some "root method weight" to reflect the importance of
-the root method to the overall benchmark. We currntly use ad-hoc
+the root method to the overall benchmark. We currently use ad-hoc
 methods to estimate beta and ignore the root method weight, so the
 full heuristic is:
 ```
@@ -269,7 +269,7 @@ descendants of the root, and so on.
 An *inline forest* is the set of inline trees that are in effect for a
 benchmark run. There is one inline tree for each method executed.
 
-A inline tree X is a *subtree* of an inline tree Y if Y contains all
+An inline tree X is a *subtree* of an inline tree Y if Y contains all
 the inlines in X and possibly more. A tree X is a *proper parent* of Y
 if Y contains just one extra inline.
 
@@ -296,7 +296,7 @@ Given the raw data, the native size impact of each inline can then be
 determined by a post-processing pass: for each method and each inline
 into the method, the size change is found by subtracting the method
 size for case where J-1 inlines were performed from the size when J
-inlines were perfomed. Note not all methods will be able to perform
+inlines were performed. Note not all methods will be able to perform
 the full set of K inlines, so as K increases, the number of methods
 that do more inlines decrease. So if there are initially N root
 methods the total number of rows of inline data with a given version
@@ -304,9 +304,9 @@ decreases as the version increases.
 
 Reliably identifying the root across runs proved nontrivial, since the
 main values used as identifying keys (token and hash) were not
-sufficiently unique. These might come from addtional stub methods
-created by the crossgen process or perhaps from multipliy instantiated
-generic methods. Postprocessing would thus ignore any data from a
+sufficiently unique. These might come from additional stub methods
+created by the crossgen process or perhaps from multiply instantiated
+generic methods. Post-processing would thus ignore any data from a
 method where the key was not unique (eg multiple version 0 rows with
 the same token and hash).
 
@@ -410,13 +410,13 @@ host machine, time-based measurements also can fall prey to
 microarchitectural implementation issues, in particular things like
 loop alignments, global branch prediction, various security-inspired
 randomization techniques, power management, and so on. Thus even
-run-to-run repeatabilty on an otherwise quiet machine will be
+run-to-run repeatability on an otherwise quiet machine will be
 impacted. The inliner also operates early enough in the compilation
-pipleline that machine microarchitecture is of a secondary concern.
+pipeline that machine microarchitecture is of a secondary concern.
 
 To avoid some of these pitfalls we have adopted the instructions
 retired by the benchmark as our primary performance metric. This is
-relatively insensitve to microarchitectural detals (with some caveats)
+relatively insensitive to microarchitectural detals (with some caveats)
 and noise levels of 0.01% - 0.1% are not difficult to come by.
 
 Measuring instructions retired on Windows requires elevation since
@@ -464,7 +464,7 @@ The measurement process described below is orchestrated by the
 [PerformanceExplorer](https://github.com/AndyAyersMS/PerformanceExplorer).
 
 Benchmarks are set up to run under xunit-performance. Per-benchmark
-times are rougly normalized to 1 second to try and keep the variance
+times are roughly normalized to 1 second to try and keep the variance
 constant in each benchmark.
 
 Xunit-performance runs the benchmark code via reflection. For each
@@ -490,7 +490,7 @@ significantly from the noinline version, or if the root has no
 inlines. Roots are explored in the order of the number of calls (see
 below).
 
-### Addtional Data Measured
+### Additional Data Measured
 
 Along with the measured change in instructions retired, it seemed
 important to also get some idea about how the call counts were
@@ -528,8 +528,8 @@ to get at the inline data).
 
 The impact of specific inlines can be elevated above the noise by
 iteration -- repeatedly invoking methods in loops. This elevation
-generally a manual proces and so restricts the set of inlines that can
-be studied. But some degree of this is probabaly necesary.
+generally a manual process and so restricts the set of inlines that can
+be studied. But some degree of this is probably necessary.
 
 Adoption of a benchmarking framework like xunit-perf allows for the
 iteration strategy to be determined after the benchmark is authored.
@@ -571,7 +571,7 @@ The existence of this variance is readily observable. Unfortunately
 the exact nature of this variance is not well characterized. See for
 instance the discussions in
 [Flater](http://nvlpubs.nist.gov/nistpubs/technicalnotes/NIST.TN.1826.pdf).
-However it seems reasonble to assume that the variance increases,
+However it seems reasonable to assume that the variance increases,
 perhaps nonlinearly, with increasing alpha, and also increases if
 alpha itself is subject to variation, and that the variance does not
 go to zero as the benchmark is run for longer intervals.
@@ -651,7 +651,7 @@ not always available (see note above about additional data in the
 presence of crossgen). This should be fixed in the forthcoming V13
 data set.
 
-Unfortunately is is proving difficult to find good models for
+Unfortunately, it is proving difficult to find good models for
 any of the measures above. Some potential explanations:
 
 - High noise levels. Typical noise of 0.01% - 0.1% still means variations
@@ -667,7 +667,7 @@ any of the measures above. Some potential explanations:
 Various approaches that have been tried, without success, for
 performance models:
 
-- Find some subset of the data that is predictdable. For instance 
+- Find some subset of the data that is predictable. For instance 
 cases with high `CallDelta`
 - General linear modelling with nonlinear terms and interaction terms
 - Nonlinear models like mars
@@ -680,7 +680,7 @@ cases with high `CallDelta`
   to implement such a model, if they're unable to predict results well, then there
   is not much hope for simpler implementable models
 - Weighted models, where the weight is used to
-  - Cope with potentical heteroscedastic results
+  - Cope with potential heteroscedastic results
   - Ignore impact of outliers
   - Emphasize instances felt to be above the noise level
 
@@ -703,7 +703,7 @@ root method.
 
 This version of the model was intended to be preliminary so that a
 trial implementation of the ModelPolicy and idealized heuristic could
-be assessed. However no better model has emerged in the time since.
+be assessed. However, no better model has emerged in the time since.
 
 ## Current Heuristic
 
@@ -719,7 +719,7 @@ about a 1% throughput improvement.
 
 Evaluation of this heuristic on other benchmarks is just beginning.
 Some tests on parts of RavenDB show a possible 2% CQ improvement,
-though there were some interations with force inline
+though there were some interactions with force inline
 directives. Measurements on ASP.Net Techempower plaintext show about
 at 2% regression.
 
@@ -739,7 +739,7 @@ judged as unprofitable (690), and from inlines that are correctly
 estimated to increase size but are then assessed as unprofitable.
 
 Note that there may be substantial labelling error for the
-size-increasing cases, given the high noise levels in profitabily
+size-increasing cases, given the high noise levels in profitability
 measurements and the low impact of many inline instances.
 
 ## Alternatives
@@ -766,7 +766,7 @@ magnitude of the change) for each instance: the number of times it
 appears in a run that increases performance, the number of times in
 appears in a run that decreases performance, and the number of times
 it does not appear at all. The objective would be to then learn how to
-identify inlines whos appearance is correlated with improved
+identify inlines whose appearance is correlated with improved
 performance.
 
 ### Finding Ideal Forests
@@ -886,7 +886,7 @@ JitInlineDumpXml      | dumps inlines in xml format
 JitInlinePolicyReplay | enable replay from replay file
 JitInlineReplayFile   | name of the replay file to read from
 JitInlinePolicyFull   | enable FullPolicy heuristic
-JitInlinePolicyModel  | enable ModelPolicy heurisitic
+JitInlinePolicyModel  | enable ModelPolicy heuristic
 JitInlineLimit        | enable K-limiting
 JitNoInlineRange      | disable inlines in a subset of methods
 
@@ -896,7 +896,7 @@ JitNoInlineRange      | disable inlines in a subset of methods
   - Modify collection process to walk inline trees in various orders
 - Improvements to the Size models
   - Analyze cases where existing size model makes poor predictions
-  - Look for corrlated inputs
+  - Look for correlated inputs
   - Look for inputs columns with zero variance and/or low variance, 
     and either remove them or add cases to boost their relevance
   - See if there is a better way to account for the operations done by the inlinee
@@ -918,7 +918,7 @@ JitNoInlineRange      | disable inlines in a subset of methods
     inline ensembles to speed up collection
 - Improvements to the Speed model
   - Settle on proper figure of merit: Instructions or Instructions per XXX
-  - Deal with potential heteroskedacicity
+  - Deal with potential heteroscedasticity
 - Improvements to the idealized heuristic
   - Randomized studies looking for good inlining patterns
   - Manual tuning to do likewise
