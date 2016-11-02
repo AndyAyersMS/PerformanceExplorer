@@ -1381,9 +1381,9 @@ namespace PerformanceExplorer
             DirectoryInfo sandboxDirectoryInfo = new DirectoryInfo(sandboxDir);
 
             // Copy over xunit packages
-            string xUnitPerfRunner = Path.Combine(coreclrRoot, @"packages\Microsoft.DotNet.xunit.performance.runner.Windows\1.0.0-alpha-build0035\tools");
-            string xUnitPerfConsole = Path.Combine(coreclrRoot, @"packages\xunit.console.netcore\1.0.2-prerelease-00101\runtimes\any\native");
-            string xUnitPerfAnalysis = Path.Combine(coreclrRoot, @"packages\Microsoft.DotNet.xunit.performance.analysis\1.0.0-alpha-build0035\tools");
+            string xUnitPerfRunner = Path.Combine(coreclrRoot, @"packages\Microsoft.DotNet.xunit.performance.runner.Windows\1.0.0-alpha-build0040\tools");
+            string xUnitPerfAnalysis = Path.Combine(coreclrRoot, @"packages\Microsoft.DotNet.xunit.performance.analysis\1.0.0-alpha-build0040\tools");
+            string xUnitPerfConsole = Path.Combine(coreclrRoot, @"packages\xunit.console.netcore\1.0.2-prerelease-00177\runtimes\any\native");
 
             CopyAll(new DirectoryInfo(xUnitPerfRunner), sandboxDirectoryInfo);
             CopyAll(new DirectoryInfo(xUnitPerfConsole), sandboxDirectoryInfo);
