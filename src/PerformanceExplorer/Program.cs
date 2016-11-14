@@ -1732,7 +1732,7 @@ namespace PerformanceExplorer
             // need to determine which methods do have unique IDs.
 
             // This is the count of noinline methods with unique IDs.
-            int methodCount = noinlineResults.Methods.Count;
+            int methodCount = ExploreInlines ? noinlineResults.Methods.Count : 1;
 
             // We'll collect up these methods with their full trees here.
             HashSet<MethodId> fullMethodIds = new HashSet<MethodId>();
@@ -1758,7 +1758,7 @@ namespace PerformanceExplorer
                 fullConfiguration.Environment["COMPlus_JitInlineSize"] = "200";
                 fullConfiguration.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
-                // Build an exclude string disabiling inlining in all the methods we've
+                // Build an exclude string disabling inlining in all the methods we've
                 // collected so far. If there are no methods yet, don't bother.
                 if (fullMethodIds.Count > 0)
                 {
@@ -1802,7 +1802,7 @@ namespace PerformanceExplorer
                         fullMethods.Add(m);
                         newMethodIds.Add(id);
 
-                        if (!noinlineResults.Methods.ContainsKey(id))
+                        if (ExploreInlines && !noinlineResults.Methods.ContainsKey(id))
                         {
                             // Need to figure out why this happens.
                             //
@@ -2012,11 +2012,40 @@ namespace PerformanceExplorer
         Results BuildRandomModel(Runner r, Runner x, Benchmark b, uint seed)
         {
             Console.WriteLine("----");
-            Console.WriteLine("---- Random Model {0} for {1}", seed, b.ShortName);
+            Console.WriteLine("---- Random Model {0:X} for {1}", seed, b.ShortName);
 
-            // Grr, requires DEBUG build. Punt for now.
-            return null;
+            string seedString = String.Format("0x{0:X}", seed);
+            Configuration randomConfig = new Configuration("random-" + seedString);
+            randomConfig.ResultsDirectory = Program.RESULTS_DIR;
+            randomConfig.Environment["COMPlus_JitInlinePolicyRandom"] = seedString;
+            randomConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
 
+            Results results = r.RunBenchmark(b, randomConfig);
+
+            if (results == null || !results.Success)
+            {
+                Console.WriteLine("{0} run failed\n", randomConfig.Name);
+                return null;
+            }
+
+            XmlSerializer xml = new XmlSerializer(typeof(InlineForest));
+            InlineForest f;
+            Stream xmlFile = new FileStream(results.LogFile, FileMode.Open);
+            f = (InlineForest)xml.Deserialize(xmlFile);
+            long inlineCount = f.Methods.Sum(m => m.InlineCount);
+            Console.WriteLine("*** {0} config has {1} methods, {2} inlines",
+                randomConfig.Name, f.Methods.Length, inlineCount);
+            results.InlineForest = f;
+
+            // Now get perf numbers
+            Configuration randomPerfConfig = new Configuration(randomConfig.Name + "-perf");
+            randomPerfConfig.ResultsDirectory = Program.RESULTS_DIR;
+            randomPerfConfig.Environment["COMPlus_JitInlinePolicyRandom"] = seedString;
+            Results perfResults = x.RunBenchmark(b, randomPerfConfig);
+            results.Performance = perfResults.Performance;
+            results.Performance.Print(randomConfig.Name);
+
+            return results;
         }
 
         static void SetupResults()
@@ -2057,6 +2086,9 @@ namespace PerformanceExplorer
         public static bool UseModelModel = false;
         public static bool UseAltModel = false;
         public static bool UseSizeModel = false;
+        public static bool UseRandomModel = false;
+        public static uint RandomSeed = 0x55;
+        public static uint RandomTries = 1;
         public static bool ExploreInlines = true;
         public static bool CaptureCallCounts = true;
         public static bool SkipProblemBenchmarks = true;
@@ -2084,7 +2116,7 @@ namespace PerformanceExplorer
                         ExploreInlines = false;
                         CaptureCallCounts = false;
                     }
-                    if (arg == "-disableZap")
+                    else if (arg == "-disableZap")
                     {
                         DisableZap = true;
                     }
@@ -2124,6 +2156,14 @@ namespace PerformanceExplorer
                     {
                         ExploreInlines = false;
                     }
+                    else if (arg == "-useRandom")
+                    {
+                        UseRandomModel = true;
+                    }
+                    else if (arg == "-randomTries" && (i + 1) < args.Length)
+                    {
+                        RandomTries = UInt32.Parse(args[++i]);
+                    }
                     else if (arg == "-minIterations" && (i + 1) < args.Length)
                     {
                         MinIterations = UInt32.Parse(args[++i]);
@@ -2162,6 +2202,7 @@ namespace PerformanceExplorer
                 UseModelModel ||
                 UseAltModel ||
                 UseFullModel ||
+                UseRandomModel || 
                 UseSizeModel;
 
             if (ExploreInlines)
@@ -2448,6 +2489,21 @@ namespace PerformanceExplorer
                         continue;
                     }
                     benchmarkResults.Add(sizeResults);
+                }
+
+                if (UseRandomModel)
+                {
+                    uint seed = RandomSeed;
+                    for (uint i = 0; i < RandomTries; i++, seed += RandomSeed)
+                    {
+                        Results randomResults = BuildRandomModel(r, x, b, seed);
+                        if (randomResults == null)
+                        {
+                            Console.WriteLine("Skipping remainder of runs for {0}", b.ShortName);
+                            continue;
+                        }
+                        benchmarkResults.Add(randomResults);
+                    }
                 }
 
                 aggregateResults.Add(benchmarkResults);
