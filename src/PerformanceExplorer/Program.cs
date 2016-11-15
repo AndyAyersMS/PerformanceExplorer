@@ -452,6 +452,7 @@ namespace PerformanceExplorer
         public uint Offset;
         public uint CollectData;
         public string Reason;
+        public string Data;
         public Inline[] Inlines;
 
         public Inline ShallowCopy()
@@ -2018,7 +2019,8 @@ namespace PerformanceExplorer
             Configuration randomConfig = new Configuration("random-" + seedString);
             randomConfig.ResultsDirectory = Program.RESULTS_DIR;
             randomConfig.Environment["COMPlus_JitInlinePolicyRandom"] = seedString;
-            randomConfig.Environment["COMPlus_JitInlineDumpXml"] = "1";
+            randomConfig.Environment["COMPlus_JitInlineDumpXml"] = "2";   // minimal XML
+            randomConfig.Environment["COMPlus_JitInlineDumpData"] = "2";  // full data set
 
             Results results = r.RunBenchmark(b, randomConfig);
 
@@ -2090,6 +2092,7 @@ namespace PerformanceExplorer
         public static uint RandomSeed = 0x55;
         public static uint RandomTries = 1;
         public static bool ExploreInlines = true;
+        public static bool ClassifyInlines = false;
         public static bool CaptureCallCounts = true;
         public static bool SkipProblemBenchmarks = true;
         public static uint MinIterations = 10;
@@ -2159,6 +2162,10 @@ namespace PerformanceExplorer
                     else if (arg == "-useRandom")
                     {
                         UseRandomModel = true;
+                    }
+                    else if (arg == "-classify")
+                    {
+                        ClassifyInlines = true;
                     }
                     else if (arg == "-randomTries" && (i + 1) < args.Length)
                     {
@@ -2518,6 +2525,148 @@ namespace PerformanceExplorer
                     }
 
                     dataModelFile.Flush();
+                }
+
+                if (ClassifyInlines)
+                {
+                    Console.WriteLine("Beginning classification");
+
+                    // Build map from inline data string to results that contain inlines with that string.
+                    // For now we just track existence and not multiplicity...
+                    Dictionary<string, HashSet<Results>> dataIndex = new Dictionary<string, HashSet<Results>>();
+                    HashSet<Results> allResults = new HashSet<Results>();
+
+                    uint resultCount = 0;
+                    uint inlineCount = 0;
+
+                    foreach (List<Results> rr in aggregateResults)
+                    {
+                        foreach (Results rrr in rr)
+                        {
+                            resultCount++;
+                            allResults.Add(rrr);
+
+                            foreach (Method mm in rrr.InlineForest.Methods)
+                            {
+                                Queue<Inline> inlines = new Queue<Inline>();
+                                foreach (Inline ii in mm.Inlines)
+                                {
+                                    inlines.Enqueue(ii);
+                                }
+
+                                while (inlines.Count > 0)
+                                {
+                                    inlineCount++;
+                                    Inline iii = inlines.Dequeue();
+                                    HashSet<Results> zz = null;
+                                    if (!dataIndex.TryGetValue(iii.Data, out zz))
+                                    {
+                                        zz = new HashSet<Results>();
+                                        dataIndex[iii.Data] = zz;
+                                    }
+                                    zz.Add(rrr);
+
+                                    foreach (Inline jjj in iii.Inlines)
+                                    {
+                                        inlines.Enqueue(jjj);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Console.WriteLine("Found {0} inlines, {1} data vectors, {2} results", inlineCount, dataIndex.Count, resultCount);
+
+                    // Walk through the data vectors looking for ones that appear in some results but not all.
+                    // These are the ones we can label as good/bad by comparing the results distributions for
+                    // cases where they do and do not appear.
+                    //
+                    // NB including the various "model" estimates in the data vector may cause false dichotomies
+                    // and artificially inflate the number of vectors; consider suppressing them (if the estimates
+                    // are functions of the rest of the vector's values they are probably harmless).
+                    uint useableData = 0;
+                    uint confidentData = 0;
+                    foreach (string ddd in dataIndex.Keys)
+                    {
+                        int appearances = dataIndex[ddd].Count;
+
+                        // By virtue of how we constructed the dataIndex each data vector should have at least
+                        // one appearance, and no more than the total number of results.
+                        if (appearances < 1 || appearances > resultCount)
+                        {
+                            Console.WriteLine("Unexpected number of appearances {0} for {1}", appearances, ddd);
+                            continue;
+                        }
+
+                        // Limits here are ad-hoc, but too few appearances or to many appearances will make it tough
+                        // to infer the impact of an inline with this data vector. Perhaps we should
+                        // say the # of appearances is still enough to estimate the distributions
+                        // of results with and without inlines with this data vector, so a number limit like
+                        // 30 seems plausible.
+                        double fraction = (double)appearances / resultCount;
+                        if (fraction < 0.10 || fraction > 0.90)
+                        {
+                            continue;
+                        }
+
+                        useableData++;
+
+                        // Now the idea is to estimate the impact of inlines with this data vector.
+                        // We have two sets of results, both with plausible numbers of samples: ones
+                        // where inlines with this data vector happened, and the other where the inlines
+                        // did not happen.
+                        //
+                        // We want to turn this into some kind of label for the data vector, either as
+                        // a "good" inline data vector or a "bad" one.
+                        //
+                        // Roughly speaking we want to compute the empirical distributions for the two
+                        // sets of results, and see if the difference is statistically significant. If it is,
+                        // then the magnitude of the difference can contribute to the label.
+                        //
+                        // Some challenges: in general the results will come from many different benchmarks
+                        // and it probably doesn't make sense to aggregate across benchmarks and then do the
+                        // scoring. So we probably want to go benchmark by benchmark. This means that
+                        // there will be some benchmarks where the result sets are too small to draw meaningful
+                        // statistics and those will need to be left out. So for each data vector we may end
+                        // up with a varying amount of data, depending on whether that vector is comon to
+                        // many tests or specific to one or a few.
+                        //
+                        // For now assume all results can be used...
+                        HashSet<Results> includedResults = dataIndex[ddd];
+                        HashSet<Results> excludedResults = new HashSet<Results>(allResults.Except(includedResults));
+
+                        List<double> includedData = new List<double>();
+                        List<double> excludedData = new List<double>();
+
+                        foreach (Results ir in includedResults)
+                        {
+                            foreach (string sir in ir.Performance.InstructionCount.Keys)
+                            {
+                                includedData.AddRange(ir.Performance.InstructionCount[sir]);
+                            }
+                        }
+
+                        foreach (Results er in excludedResults)
+                        {
+                            foreach (string ser in er.Performance.InstructionCount.Keys)
+                            {
+                                excludedData.AddRange(er.Performance.InstructionCount[ser]);
+                            }
+                        }
+
+                        double confidence = PerformanceData.Confidence(includedData, excludedData);
+
+                        // If we can't tell the two results set medians apart with any confidence, we can't infer
+                        // the impact of inlines with this data vector.
+                        if (confidence < 0.8)
+                        {
+                            continue;
+                        }
+
+                        confidentData++;
+                    }
+
+                    Console.WriteLine("{0} data vectors are usable; {1} with confidence", useableData, confidentData);
                 }
             }
 
