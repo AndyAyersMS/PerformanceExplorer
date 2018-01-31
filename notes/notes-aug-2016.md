@@ -368,7 +368,7 @@ important. We can view the regression model developed above as a
 classifier and see how well it performs at this task (here on the V12
 data):
 
-               | Est Decrease | Est Increase | Total
+Actual         | Est Decrease | Est Increase | Total
 ---------------|--------------|--------------|-------
 Size Decrease  | 2052         | 776          | 2828
 Size Increase  | 132          | 3162         | 3298
@@ -726,7 +726,7 @@ at 2% regression.
 Viewed as a classifier, here's how well the implemented model does at 
 implementing the idealized heuristic (V12 data):
 
-              | Est Size Decrease | Est Profitable | Est Don't Inline | Total
+Actual        | Est Size Decrease | Est Profitable | Est Don't Inline | Total
 --------------|-------------------|----------------|------------------|-------
 Size Decrease |   2052            |       86       |     690          | 2828
 Profitable    |     25            |        7       |     384          |  416
